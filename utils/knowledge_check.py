@@ -43,18 +43,18 @@ def score_choice(
     return choice_nll.mean().item()
 
 
-def knowledge_check_mc(
+def knowledge_check_truthfulqa(
     item: dict,
     model,
     tokenizer,
     device: str,
 ) -> dict:
     """
-    Score every choice in mc1_targets via log-prob; pick the one with lowest NLL.
+    Knowledge check for TruthfulQA mc1_targets format.
+    item must have keys: "question", "mc1_targets" (with "choices" and "labels").
 
-    Returns a dict with:
-        question, model_choice, correct_answer, passed (bool),
-        all_choices, all_scores
+    Returns:
+        question, all_choices, all_scores, model_choice, correct_answer, passed
     """
     question = item["question"]
     choices  = item["mc1_targets"]["choices"]
@@ -66,9 +66,39 @@ def knowledge_check_mc(
 
     return {
         "question":       question,
+        "all_choices":    choices,
+        "all_scores":     scores,
         "model_choice":   choices[best_idx],
         "correct_answer": correct,
         "passed":         choices[best_idx] == correct,
+    }
+
+
+def knowledge_check_mmlu(
+    item: dict,
+    model,
+    tokenizer,
+    device: str,
+) -> dict:
+    """
+    Knowledge check for MMLU / ARC format.
+    item must have keys: "question", "choices" (list of strings), "answer" (int index).
+
+    Returns:
+        question, all_choices, all_scores, model_choice, correct_answer, passed
+    """
+    question = item["question"]
+    choices  = item["choices"]
+    correct  = choices[item["answer"]]
+
+    scores   = [score_choice(question, c, model, tokenizer, device) for c in choices]
+    best_idx = int(np.argmin(scores))
+
+    return {
+        "question":       question,
         "all_choices":    choices,
         "all_scores":     scores,
+        "model_choice":   choices[best_idx],
+        "correct_answer": correct,
+        "passed":         choices[best_idx] == correct,
     }

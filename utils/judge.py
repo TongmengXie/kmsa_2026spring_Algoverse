@@ -57,6 +57,54 @@ def parse_batch_results_anthropic(batch_results, source_df) -> "pd.DataFrame":
     return pd.DataFrame(records)
 
 
+def parse_batch_results_openai(batch_output_lines, source_df) -> "pd.DataFrame":
+    """Parse OpenAI batch output lines into a DataFrame matching the judge CSV format.
+
+    batch_output_lines: iterable of raw JSON strings (one per line from the output file).
+    Joins parsed votes back to source_df by row_index to recover question and config.
+    Returns DataFrame with cols: question, config, reasoning_1, vote_1, ..., reasoning_n, vote_n.
+
+    custom_id format expected: "{row_index}_{config}_vote_{v}"
+    """
+    import json
+    import pandas as pd
+
+    rows = {}  # row_index -> {config, vote_1, reasoning_1, ...}
+
+    for line in batch_output_lines:
+        if not line.strip():
+            continue
+        obj = json.loads(line)
+        custom_id = obj["custom_id"]
+        parts = custom_id.split("_")
+        row_index = int(parts[0])
+        config = parts[1]
+        v = parts[3]
+
+        text = obj["response"]["body"]["choices"][0]["message"]["content"].strip()
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        vote_line = lines[-1].lower()
+        if "incorrect" in vote_line:
+            vote = "incorrect"
+        elif "correct" in vote_line:
+            vote = "correct"
+        else:
+            vote = "unclear"
+        reasoning = " ".join(lines[:-1]) if len(lines) > 1 else ""
+
+        if row_index not in rows:
+            rows[row_index] = {"config": config}
+        rows[row_index][f"reasoning_{v}"] = reasoning
+        rows[row_index][f"vote_{v}"] = vote
+
+    records = []
+    for row_index, data in rows.items():
+        question = source_df.loc[row_index, "question"]
+        records.append({"question": question, **data})
+
+    return pd.DataFrame(records)
+
+
 def judge_once(
     question: str,
     correct_answer: str,
@@ -137,6 +185,38 @@ def build_batch_requests_anthropic(
             requests.append({
                 "custom_id": f"{idx}_{row['config']}_vote_{v}",
                 "params": {
+                    "model": model,
+                    "max_tokens": 256,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            })
+    return requests
+
+
+def build_batch_requests_openai(
+    df,
+    model: str,
+    n_votes: int = 3,
+) -> list[dict]:
+    """Build a list of OpenAI batch request dicts from a responses DataFrame.
+
+    Each dict is one JSONL line for the OpenAI Batch API (/v1/chat/completions).
+    custom_id format: "{row_index}_{config}_vote_{v}"
+    Assumes df has columns: question, correct_answer, config, response.
+    """
+    requests = []
+    for idx, row in df.iterrows():
+        prompt = JUDGE_PROMPT.format(
+            question=row["question"],
+            correct_answer=row["correct_answer"],
+            response=row["response"],
+        )
+        for v in range(1, n_votes + 1):
+            requests.append({
+                "custom_id": f"{idx}_{row['config']}_vote_{v}",
+                "method": "POST",
+                "url": "/v1/chat/completions",
+                "body": {
                     "model": model,
                     "max_tokens": 256,
                     "messages": [{"role": "user", "content": prompt}],

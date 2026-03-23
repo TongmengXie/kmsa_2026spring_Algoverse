@@ -50,26 +50,30 @@ project/
 │   ├── knowledge_check.py                 ← done
 │   ├── generation.py                      ← done
 │   ├── judge.py                           ← done (6 functions)
-│   ├── activation.py                      ← interface needs updating
+│   ├── activation.py                      ← done (accepts system_prompt directly)
 │   └── probe.py                           ← done
-└── data/dataset/
-    ├── truthfulQA_test_results.csv        ← MC check, 817 rows ✅
-    ├── mmlu_test_results.csv              ← MC check, 14038 rows ✅
-    ├── deception_dataset.csv              ← social scenarios, 400 rows (200 honest + 200 deceptive) ✅
-    │                                         cols: pair_id, label, prompt, response, scenario, question
-    ├── truthfulQA_responses.csv           ← 1215 rows, configs A/B/C, has row_id ✅
-    ├── mmlu_responses.csv                 ← 20634 rows, configs A/B/C, has row_id ✅
-    ├── scenario_responses_raw.csv         ← Qwen social responses, long format, checkpoint ⏳
-    ├── scenario_responses.csv             ← wide: pair_id, question, honest/deceptive scenario+response ⏳
-    ├── judge_truthfulqa_claude_haiku.csv  ← 1215 rows ✅
-    ├── judge_mmlu_claude_haiku.csv        ← 20634 rows ✅
-    ├── judge_truthfulqa_gpt4o_mini.csv    ← 1215 rows ✅
-    ├── judge_mmlu_gpt4o_mini.csv          ← 20634 rows ✅
-    ├── batch_truthfulqa_gpt4o_mini.jsonl  ✅
-    ├── batch_mmlu_gpt4o_mini_{1-9}.jsonl  ← 9 splits, tiktoken-based (≤1.8M tokens each) ✅
-    ├── tqa_full.csv                       ← votes + responses merged ✅
-    ├── mmlu_full.csv                      ← votes + responses merged ✅
-    └── probe_dataset.csv                  ← final merged dataset ❌
+├── data/dataset/
+│   ├── truthfulQA_test_results.csv        ← MC check, 817 rows ✅
+│   ├── mmlu_test_results.csv              ← MC check, 14038 rows ✅
+│   ├── deception_dataset.csv              ← social scenarios, 400 rows (200 honest + 200 deceptive) ✅
+│   │                                         cols: pair_id, label, prompt, response, scenario, question
+│   ├── truthfulQA_responses.csv           ← 1215 rows, configs A/B/C, has row_id ✅
+│   ├── mmlu_responses.csv                 ← 20634 rows, configs A/B/C, has row_id ✅
+│   ├── scenario_responses_raw.csv         ← Qwen social responses, long format, checkpoint ✅
+│   ├── scenario_responses.csv             ← wide: pair_id, question, honest/deceptive scenario+response, 200 rows ✅
+│   ├── judge_truthfulqa_claude_haiku.csv  ← 1215 rows ✅
+│   ├── judge_mmlu_claude_haiku.csv        ← 20634 rows ✅
+│   ├── judge_truthfulqa_gpt4o_mini.csv    ← 1215 rows ✅
+│   ├── judge_mmlu_gpt4o_mini.csv          ← 20634 rows ✅
+│   ├── batch_truthfulqa_gpt4o_mini.jsonl  ✅
+│   ├── batch_mmlu_gpt4o_mini_{1-9}.jsonl  ← 9 splits, tiktoken-based (≤1.8M tokens each) ✅
+│   ├── tqa_full.csv                       ← votes + responses merged ✅
+│   ├── mmlu_full.csv                      ← votes + responses merged ✅
+│   └── probe_dataset.csv                  ← final merged dataset ✅
+└── outputs/                               ← NOT in git (too large)
+    ├── activations.npy                    ← (n_samples, 28, 3584), float32 ✅ — on HF Hub
+    ├── labels.npy                         ← (n_samples,), int: truth=0, honest_mistake=1, deception=2 ✅ — on HF Hub
+    └── activations_checkpoint.npz        ← intermediate checkpoint (safe to delete after run) ✅
 ```
 
 ---
@@ -91,7 +95,7 @@ project/
 
 **Social:** Qwen generates honest + deceptive responses for all 200 pairs in `deception_dataset.csv`.
 Pre-written responses in the dataset are NOT used — Qwen must generate its own for consistent activations.
-- `scenario_responses.csv`: 200 rows (wide format) ⏳
+- `scenario_responses.csv`: 200 rows (wide format) ✅
 
 ---
 
@@ -111,7 +115,7 @@ First provide a brief reasoning (one sentence). Then on a new line write only "c
 
 **Models:**
 1. `claude-haiku-4-5-20251001` (Anthropic Batch API) ✅ both datasets done
-2. `gpt-4o-mini` (OpenAI Batch API) ⏳ TruthfulQA in progress; MMLU not yet submitted
+2. `gpt-4o-mini` (OpenAI Batch API) ✅ both datasets done
 
 **`utils/judge.py` functions:**
 - `build_batch_requests_anthropic(df, model, n_votes)` — df indexed by `row_id`
@@ -150,7 +154,7 @@ All other combinations → discard (inconsistent MC + judge signal).
 
 ---
 
-### Stage 4: Extract Activations
+### Stage 4: Extract Activations ✅
 
 One forward pass per sample, extract hidden state at **last token position** for all 28 layers.
 
@@ -160,7 +164,10 @@ def extract_activations(question, response, system_prompt, model, tokenizer, dev
 ```
 
 - Run with `batch_size=1` (no padding effect on last token)
-- Output: `outputs/activations.npy` (n_samples, 28, 3584), `outputs/labels.npy`
+- Checkpoint every 50 samples → `outputs/activations_checkpoint.npz`
+- Label encoding: `truth=0, honest_mistake=1, deception=2`
+- Output: `outputs/activations.npy` (n_samples, 28, 3584), `outputs/labels.npy` (n_samples,)
+- **Not committed to git** (too large) — shared locally among team
 
 ---
 
@@ -200,10 +207,10 @@ def extract_activations(question, response, system_prompt, model, tokenizer, dev
 - [x] Notebook: Part 4 social scenario response generation cell
 - [x] TruthfulQA GPT-4o-mini judge: batch submitted, results parsed, `judge_truthfulqa_gpt4o_mini.csv` complete
 - [x] MMLU GPT-4o-mini judge: all 9 splits submitted, `BATCH_IDS` filled, `judge_mmlu_gpt4o_mini.csv` complete
-- [ ] Run social scenario generation cell (needs RTX 4090 pod)
-- [ ] Build `probe_dataset.csv` (factual: 6/6 threshold first; social: all 200 pairs)
-- [ ] Update `utils/activation.py` to accept `system_prompt` directly
-- [ ] Extract activations → `activations.npy`, `labels.npy`
+- [x] Run social scenario generation cell → `scenario_responses.csv` (200 pairs) complete
+- [x] Build `probe_dataset.csv` (factual: 6/6 threshold; social: all 200 pairs)
+- [x] Update `utils/activation.py` to accept `system_prompt` directly
+- [x] Extract activations → `activations.npy`, `labels.npy` (shared locally, not in git)
 - [ ] (future) Write `submit_batches.py` for sequential OpenAI batch submission
 - [ ] (deferred) Probe training and evaluation
 - [ ] (deferred) Visualization and analysis
@@ -239,7 +246,7 @@ def extract_activations(question, response, system_prompt, model, tokenizer, dev
 - Notebook: MMLU parse cell → `BATCH_IDS` list (supports any number of splits)
 - `requirements.txt`: added `tiktoken>=0.12.0`
 
-### 2026-03-23
+### 2026-03-23 (session 1)
 - Notebook 3.3: vote aggregation cell — `aggregate_judge_votes`, `build_full`, `print_threshold_summary`; saves `tqa_full.csv` and `mmlu_full.csv` to disk (reloaded on kernel restart)
 - Notebook Part 4: social scenario response generation — Qwen generates honest + deceptive responses for all 200 pairs; checkpointed to `scenario_responses_raw.csv`; saves wide-format `scenario_responses.csv`
 - Decided: use 6/6 vote threshold as primary (strictest); ablate with 5/6 and 4/6 if needed
@@ -247,11 +254,20 @@ def extract_activations(question, response, system_prompt, model, tokenizer, dev
 - Discovered: RTX PRO 4500 (Blackwell, sm_120) incompatible with PyTorch 2.4.x — use RTX 4090
 - Confirmed: TruthfulQA + MMLU GPT-4o-mini judge batches both complete; `judge_truthfulqa_gpt4o_mini.csv` (1215 rows) and `judge_mmlu_gpt4o_mini.csv` (20634 rows) done; all 9 MMLU BATCH_IDS filled in notebook
 
+### 2026-03-23 (session 2)
+- Part 4 (social generation) confirmed complete: `scenario_responses.csv` 200 pairs ✅
+- `utils/activation.py`: refactored — removed broken `LIE_SYSTEM` import, signature changed from `label: str` to `system_prompt: str`
+- Notebook Part 5 added (5.1 + 5.2):
+  - 5.1: built `probe_dataset.csv` — factual (6/6 threshold from tqa_full + mmlu_full) + social (200 honest→truth, 200 deceptive→deception); merged and saved
+  - 5.2: extracted activations for all samples with checkpoint every 50; label encoding truth=0, honest_mistake=1, deception=2
+- Saved `outputs/activations.npy` (n_samples, 28, 3584) and `outputs/labels.npy` — **not committed to git**, shared locally among team
+
 ---
 
 ## Miscellaneous
 
 - `outputs/probe_results.csv`: generated from old flawed dataset — do not reference
+- `outputs/activations.npy` / `outputs/labels.npy`: not in git (file size); stored on HuggingFace Hub at `mikrokozmoz/algoverse_2026spring_kmsa_qwen2.5_7b_instruct_activations` (private dataset)
 - API keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
 - Use `do_sample=False` (greedy decoding) for all response generation
 - Use `batch_size=1` for activation extraction (no padding effect on last token)

@@ -1,12 +1,11 @@
 import numpy as np
 import torch
-from utils.generation import NEUTRAL_SYSTEM, LIE_SYSTEM
 
 
 def extract_activations(
     question: str,
     response: str,
-    label: str,
+    system_prompt: str,
     model,
     tokenizer,
     device: str,
@@ -21,8 +20,6 @@ def extract_activations(
         Index 0 = layer 1, ..., index n_layers-1 = last layer.
         (Embedding layer is excluded.)
     """
-    system_prompt = LIE_SYSTEM if label == "lie" else NEUTRAL_SYSTEM
-
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user",   "content": question},

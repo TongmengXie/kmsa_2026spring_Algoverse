@@ -63,8 +63,8 @@ project/
     ├── scenario_responses.csv             ← wide: pair_id, question, honest/deceptive scenario+response ⏳
     ├── judge_truthfulqa_claude_haiku.csv  ← 1215 rows ✅
     ├── judge_mmlu_claude_haiku.csv        ← 20634 rows ✅
-    ├── judge_truthfulqa_gpt4o_mini.csv    ← batch submitted, awaiting results ⏳
-    ├── judge_mmlu_gpt4o_mini.csv          ← 9 JSONL splits ready to submit ❌
+    ├── judge_truthfulqa_gpt4o_mini.csv    ← 1215 rows ✅
+    ├── judge_mmlu_gpt4o_mini.csv          ← 20634 rows ✅
     ├── batch_truthfulqa_gpt4o_mini.jsonl  ✅
     ├── batch_mmlu_gpt4o_mini_{1-9}.jsonl  ← 9 splits, tiktoken-based (≤1.8M tokens each) ✅
     ├── tqa_full.csv                       ← votes + responses merged ✅
@@ -126,7 +126,7 @@ First provide a brief reasoning (one sentence). Then on a new line write only "c
 
 **Batch IDs:**
 - Anthropic MMLU: `msgbatch_01TYpxpDPeBx5e7rWPgetVEk` ✅
-- TruthfulQA OpenAI: `batch_69be3bd4e05081908c2945af22be2511` ⏳
+- TruthfulQA OpenAI: `batch_69be3bd4e05081908c2945af22be2511` ✅
 
 **Planned `submit_batches.py`:** globs JSONL files, submits sequentially, polls every 3 min, logs batch IDs. Run via tmux. Write when adding the next judge model.
 
@@ -198,8 +198,8 @@ def extract_activations(question, response, system_prompt, model, tokenizer, dev
 - [x] Notebook: MMLU parse cell → `BATCH_IDS` list
 - [x] Notebook: 3.3 vote aggregation → `tqa_full.csv`, `mmlu_full.csv`
 - [x] Notebook: Part 4 social scenario response generation cell
-- [~] TruthfulQA GPT-4o-mini judge: batch submitted, awaiting results → fill batch ID into parse cell
-- [ ] MMLU GPT-4o-mini judge: submit 9 splits sequentially, fill `BATCH_IDS` in parse cell
+- [x] TruthfulQA GPT-4o-mini judge: batch submitted, results parsed, `judge_truthfulqa_gpt4o_mini.csv` complete
+- [x] MMLU GPT-4o-mini judge: all 9 splits submitted, `BATCH_IDS` filled, `judge_mmlu_gpt4o_mini.csv` complete
 - [ ] Run social scenario generation cell (needs RTX 4090 pod)
 - [ ] Build `probe_dataset.csv` (factual: 6/6 threshold first; social: all 200 pairs)
 - [ ] Update `utils/activation.py` to accept `system_prompt` directly
@@ -245,6 +245,7 @@ def extract_activations(question, response, system_prompt, model, tokenizer, dev
 - Decided: use 6/6 vote threshold as primary (strictest); ablate with 5/6 and 4/6 if needed
 - Decided: social responses must be Qwen-generated (pre-written responses in dataset discarded)
 - Discovered: RTX PRO 4500 (Blackwell, sm_120) incompatible with PyTorch 2.4.x — use RTX 4090
+- Confirmed: TruthfulQA + MMLU GPT-4o-mini judge batches both complete; `judge_truthfulqa_gpt4o_mini.csv` (1215 rows) and `judge_mmlu_gpt4o_mini.csv` (20634 rows) done; all 9 MMLU BATCH_IDS filled in notebook
 
 ---
 

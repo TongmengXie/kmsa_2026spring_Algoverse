@@ -51,7 +51,8 @@ project/
 │   ├── generation.py                      ← done
 │   ├── judge.py                           ← done (6 functions)
 │   ├── activation.py                      ← done (accepts system_prompt directly)
-│   └── probe.py                           ← done
+│   ├── probe.py                           ← done (train_linear_probe, train_cascaded_probe, probe_all_layers, probe_all_layers_cascaded)
+│   └── analysis.py                        ← done (reduce_activations_pca, save_results_csv)
 ├── data/dataset/
 │   ├── truthfulQA_test_results.csv        ← MC check, 817 rows ✅
 │   ├── mmlu_test_results.csv              ← MC check, 14038 rows ✅
@@ -213,7 +214,12 @@ def extract_activations(question, response, system_prompt, model, tokenizer, dev
 - [x] Update `utils/activation.py` to accept `system_prompt` directly
 - [x] Extract activations → `activations.npy`, `labels.npy` (shared locally, not in git)
 - [ ] (future) Write `submit_batches.py` for sequential OpenAI batch submission
-- [ ] (deferred) Probe training and evaluation
+- [x] `utils/analysis.py`: `reduce_activations_pca`, `save_results_csv`
+- [x] `utils/probe.py`: `train_linear_probe`, `train_cascaded_probe`, `probe_all_layers`, `probe_all_layers_cascaded`
+- [x] Notebook Part 6.1 Setup: load activations (11708 samples), label map, PCA timing benchmark (cell 36/37 executed)
+- [ ] Run full PCA reduction → `activations_pca128.npy` (28 layers × 128 components)
+- [ ] Run 3-way direct probe → `probe_results_3way.csv` + plots
+- [ ] (future) Approach 2: Cascaded probe
 - [ ] (deferred) Visualization and analysis
 
 ---
@@ -254,6 +260,11 @@ def extract_activations(question, response, system_prompt, model, tokenizer, dev
 - Decided: social responses must be Qwen-generated (pre-written responses in dataset discarded)
 - Discovered: RTX PRO 4500 (Blackwell, sm_120) incompatible with PyTorch 2.4.x — use RTX 4090
 - Confirmed: TruthfulQA + MMLU GPT-4o-mini judge batches both complete; `judge_truthfulqa_gpt4o_mini.csv` (1215 rows) and `judge_mmlu_gpt4o_mini.csv` (20634 rows) done; all 9 MMLU BATCH_IDS filled in notebook
+
+### 2026-03-24
+- `utils/analysis.py` created: `reduce_activations_pca` (independent PCA per layer, returns reduced acts / components / explained_var); `save_results_csv` (flattens probe result list into CSV, supports both 3-way and cascaded fields)
+- `utils/probe.py` completed: `train_linear_probe` (5-fold stratified CV, LogisticRegression saga, StandardScaler per fold); `train_cascaded_probe` (two-stage: stage1 truth vs non_truth, stage2 honest_mistake vs deception with oracle eval + AUROC); `probe_all_layers` / `probe_all_layers_cascaded` wrappers
+- Notebook Part 6 added: 6.1 Setup (import probe/analysis utils, load activations 11708×28×3584, label map, confirmed counts: truth=3566, honest_mistake=4305, deception=3837); PCA timing benchmark cell (layer 0: PCA 2.9s, probe 14.9s → est. 8.3 min for all 28 layers); full PCA cell for `activations_pca128.npy` (written, not yet run); 6.2 Direct 3-Way cell (probe_all_layers + 3 plot types: macro F1/layer, per-class F1/layer, top-5 confusion matrices — written, not yet run)
 
 ### 2026-03-23 (session 2)
 - Part 4 (social generation) confirmed complete: `scenario_responses.csv` 200 pairs ✅

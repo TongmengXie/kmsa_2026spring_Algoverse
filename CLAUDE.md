@@ -190,6 +190,7 @@ def extract_activations(question, response, system_prompt, model, tokenizer, dev
 3. **One cell at a time** in the notebook.
 4. **No large rewrites** unless explicitly asked.
 5. **Ask when uncertain** rather than assuming.
+6. **Reply in Chinese only.** Never mix in Korean or Japanese under any circumstances.
 
 ---
 

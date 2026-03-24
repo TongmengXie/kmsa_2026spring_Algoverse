@@ -2,14 +2,15 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import f1_score, classification_report
+from sklearn.metrics import f1_score, confusion_matrix, roc_auc_score
+from tqdm.auto import tqdm
 
 
 def train_linear_probe(
     activations: np.ndarray,
     labels: np.ndarray,
     n_splits: int = 5,
-    max_iter: int = 1000,
+    max_iter: int = 200,
     random_state: int = 42,
 ) -> dict:
     """
@@ -19,19 +20,22 @@ def train_linear_probe(
     Parameters
     ----------
     activations : (n_samples, hidden_dim)
-    labels      : (n_samples,) — string labels e.g. "truth"/"lie"/"mistake"
+    labels      : (n_samples,) — string labels "truth"/"honest_mistake"/"deception"
 
     Returns
     -------
     dict with keys:
-        f1_per_class : dict {class_name: mean_f1_across_folds}
-        f1_macro     : float
-        report       : str  (classification report from last fold)
+        f1_per_class          : dict {class_name: mean_f1_across_folds}
+        f1_macro              : float
+        confusion_matrix      : np.ndarray (n_classes, n_classes), accumulated counts
+        confusion_matrix_norm : np.ndarray (n_classes, n_classes), row-normalized (recall view)
+        classes               : list of class names in matrix row/col order
     """
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     classes = sorted(set(labels))
 
     fold_f1s = {c: [] for c in classes}
+    cm_accum = np.zeros((len(classes), len(classes)), dtype=int)
 
     for train_idx, val_idx in skf.split(activations, labels):
         X_train, X_val = activations[train_idx], activations[val_idx]
@@ -41,7 +45,7 @@ def train_linear_probe(
         X_train = scaler.fit_transform(X_train)
         X_val   = scaler.transform(X_val)
 
-        clf = LogisticRegression(max_iter=max_iter, random_state=random_state, C=1.0)
+        clf = LogisticRegression(solver="saga", max_iter=max_iter, random_state=random_state, C=1.0)
         clf.fit(X_train, y_train)
         y_pred = clf.predict(X_val)
 
@@ -49,12 +53,151 @@ def train_linear_probe(
         for cls, score in zip(classes, f1s):
             fold_f1s[cls].append(score)
 
+        cm_accum += confusion_matrix(y_val, y_pred, labels=classes)
+
     f1_per_class = {cls: float(np.mean(scores)) for cls, scores in fold_f1s.items()}
     f1_macro = float(np.mean(list(f1_per_class.values())))
 
+    row_sums = cm_accum.sum(axis=1, keepdims=True)
+    cm_norm = cm_accum.astype(float) / np.where(row_sums == 0, 1, row_sums)
+
     return {
-        "f1_per_class": f1_per_class,
-        "f1_macro":     f1_macro,
+        "f1_per_class":          f1_per_class,
+        "f1_macro":              f1_macro,
+        "confusion_matrix":      cm_accum,
+        "confusion_matrix_norm": cm_norm,
+        "classes":               classes,
+    }
+
+
+def train_cascaded_probe(
+    activations: np.ndarray,
+    labels: np.ndarray,
+    n_splits: int = 5,
+    max_iter: int = 200,
+    random_state: int = 42,
+) -> dict:
+    """
+    Train a two-stage cascaded probe on activations from a single layer
+    using stratified k-fold cross-validation.
+
+    Stage 1: truth vs non_truth (honest_mistake + deception)
+    Stage 2: honest_mistake vs deception, on non_truth samples only
+
+    Parameters
+    ----------
+    activations : (n_samples, hidden_dim)
+    labels      : (n_samples,) — string labels "truth"/"honest_mistake"/"deception"
+
+    Returns
+    -------
+    dict with keys:
+        f1_per_class          : dict {class_name: overall 3-way f1}
+        f1_macro              : float, overall 3-way macro F1
+        confusion_matrix      : np.ndarray (3,3), accumulated counts
+        confusion_matrix_norm : np.ndarray (3,3), row-normalized
+        classes               : list of class names in matrix row/col order
+        stage1_f1             : dict {"truth": float, "non_truth": float}
+        stage2_f1             : dict {"honest_mistake": float, "deception": float}
+        stage2_auroc          : float, AUROC for deception (positive class) in stage 2
+    """
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    classes = sorted(set(labels))  # ['deception', 'honest_mistake', 'truth']
+
+    cm_accum = np.zeros((len(classes), len(classes)), dtype=int)
+
+    s1_fold_f1s = {"truth": [], "non_truth": []}
+    s2_fold_f1s = {"honest_mistake": [], "deception": []}
+    s2_fold_aurocs = []
+
+    labels_arr = np.array(labels)
+
+    for train_idx, val_idx in skf.split(activations, labels_arr):
+        X_train, X_val = activations[train_idx], activations[val_idx]
+        y_train, y_val = labels_arr[train_idx],  labels_arr[val_idx]
+
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_val   = scaler.transform(X_val)
+
+        # ── Stage 1: truth vs non_truth ───────────────────────────────────
+        s1_train = np.where(y_train == "truth", "truth", "non_truth")
+        s1_val   = np.where(y_val   == "truth", "truth", "non_truth")
+
+        clf1 = LogisticRegression(solver="saga", max_iter=max_iter, random_state=random_state, C=1.0)
+        clf1.fit(X_train, s1_train)
+        s1_pred = clf1.predict(X_val)
+
+        s1_f1s = f1_score(s1_val, s1_pred, labels=["truth", "non_truth"], average=None)
+        s1_fold_f1s["truth"].append(s1_f1s[0])
+        s1_fold_f1s["non_truth"].append(s1_f1s[1])
+
+        # ── Stage 2: honest_mistake vs deception (non_truth samples only) ─
+        s2_mask_train = y_train != "truth"
+        s2_mask_val   = y_val   != "truth"
+
+        s2_classes = ["deception", "honest_mistake"]
+        if s2_mask_train.sum() >= 2 and len(set(y_train[s2_mask_train])) == 2:
+            clf2 = LogisticRegression(solver="saga", max_iter=max_iter, random_state=random_state, C=1.0)
+            clf2.fit(X_train[s2_mask_train], y_train[s2_mask_train])
+
+            # Stage 2 metrics: evaluate on TRUE non-truth val samples (oracle signal)
+            s2_pred_oracle  = clf2.predict(X_val[s2_mask_val])
+            s2_proba_oracle = clf2.predict_proba(X_val[s2_mask_val])
+            dec_idx         = list(clf2.classes_).index("deception")
+
+            s2_f1s = f1_score(
+                y_val[s2_mask_val], s2_pred_oracle,
+                labels=s2_classes, average=None,
+            )
+            s2_fold_f1s["deception"].append(s2_f1s[0])
+            s2_fold_f1s["honest_mistake"].append(s2_f1s[1])
+
+            auroc = roc_auc_score(
+                (y_val[s2_mask_val] == "deception").astype(int),
+                s2_proba_oracle[:, dec_idx],
+            )
+            s2_fold_aurocs.append(auroc)
+
+            # ── Combine: stage 1 pred → if non_truth, apply clf2 to those samples
+            y_combined = np.array([""] * len(y_val), dtype=object)
+            s1_truth_mask    = s1_pred == "truth"
+            s1_nontrue_mask  = ~s1_truth_mask
+            y_combined[s1_truth_mask]   = "truth"
+            y_combined[s1_nontrue_mask] = clf2.predict(X_val[s1_nontrue_mask])
+
+        else:
+            s2_fold_f1s["deception"].append(float("nan"))
+            s2_fold_f1s["honest_mistake"].append(float("nan"))
+            s2_fold_aurocs.append(float("nan"))
+            # Fallback: use stage 1 only, label non_truth as honest_mistake
+            y_combined = np.where(s1_pred == "truth", "truth", "honest_mistake")
+
+        cm_accum += confusion_matrix(y_val, y_combined, labels=classes)
+
+    # ── Aggregate metrics ─────────────────────────────────────────────────
+    row_sums = cm_accum.sum(axis=1, keepdims=True)
+    cm_norm  = cm_accum.astype(float) / np.where(row_sums == 0, 1, row_sums)
+
+    # Overall 3-way F1 from accumulated confusion matrix
+    f1_per_class = {}
+    for i, cls in enumerate(classes):
+        tp = cm_accum[i, i]
+        fp = cm_accum[:, i].sum() - tp
+        fn = cm_accum[i, :].sum() - tp
+        denom = 2 * tp + fp + fn
+        f1_per_class[cls] = float(2 * tp / denom) if denom > 0 else 0.0
+    f1_macro = float(np.mean(list(f1_per_class.values())))
+
+    return {
+        "f1_per_class":          f1_per_class,
+        "f1_macro":              f1_macro,
+        "confusion_matrix":      cm_accum,
+        "confusion_matrix_norm": cm_norm,
+        "classes":               classes,
+        "stage1_f1":             {k: float(np.nanmean(v)) for k, v in s1_fold_f1s.items()},
+        "stage2_f1":             {k: float(np.nanmean(v)) for k, v in s2_fold_f1s.items()},
+        "stage2_auroc":          float(np.nanmean(s2_fold_aurocs)),
     }
 
 
@@ -76,9 +219,35 @@ def probe_all_layers(
     """
     n_layers = activations.shape[1]
     results = []
-    for layer_idx in range(n_layers):
-        layer_acts = activations[:, layer_idx, :]   # (n_samples, hidden_dim)
+    for layer_idx in tqdm(range(n_layers), desc="3-way probe (layers)"):
+        layer_acts = activations[:, layer_idx, :]
         result = train_linear_probe(layer_acts, labels, **kwargs)
+        result["layer"] = layer_idx
+        results.append(result)
+    return results
+
+
+def probe_all_layers_cascaded(
+    activations: np.ndarray,
+    labels: np.ndarray,
+    **kwargs,
+) -> list[dict]:
+    """
+    Run train_cascaded_probe for every layer.
+
+    Parameters
+    ----------
+    activations : (n_samples, n_layers, hidden_dim)
+
+    Returns
+    -------
+    list of dicts, one per layer (length = n_layers)
+    """
+    n_layers = activations.shape[1]
+    results = []
+    for layer_idx in tqdm(range(n_layers), desc="cascaded probe (layers)"):
+        layer_acts = activations[:, layer_idx, :]
+        result = train_cascaded_probe(layer_acts, labels, **kwargs)
         result["layer"] = layer_idx
         results.append(result)
     return results

@@ -51,7 +51,7 @@ project/
 │   ├── generation.py                      ← done
 │   ├── judge.py                           ← done (6 functions)
 │   ├── activation.py                      ← done (accepts system_prompt directly)
-│   ├── probe.py                           ← done (train_linear_probe, train_cascaded_probe, probe_all_layers, probe_all_layers_cascaded)
+│   ├── probe.py                           ← done (train_linear_probe, train_cascaded_probe, probe_all_layers, probe_all_layers_cascaded); MLP variants planned
 │   └── analysis.py                        ← done (reduce_activations_pca, save_results_csv)
 ├── data/dataset/
 │   ├── truthfulQA_test_results.csv        ← MC check, 817 rows ✅
@@ -172,6 +172,69 @@ def extract_activations(question, response, system_prompt, model, tokenizer, dev
 
 ---
 
+### Stage 5: PCA k Selection
+
+Select optimal PCA components k before full-scale reduction. Analysis is **model-agnostic**: layers chosen by proportion of total depth, so methodology transfers to any model in the benchmark.
+
+**Representative layers:** 25%, 50%, 75% of total layers (rounded), e.g. for 28-layer Qwen2.5-7B → layers 7, 14, 21.
+
+**k search space:** `{16, 32, 64, 128, 256, 512}` (powers of 2)
+
+**4 metrics tracked per k per layer:**
+
+| Metric | What it shows |
+|--------|--------------|
+| Variance explained | Information retained by PCA |
+| Val macro F1 | Probe classification performance |
+| Train − Val F1 gap | Overfitting indicator |
+| Training time | Computational cost |
+
+**Decision rule:**
+- Plot all 4 curves against k for each of the 3 representative layers
+- Use kneedle algorithm to find elbow on variance explained and val F1 curves
+- If the three layers agree on an elbow → use that k
+- If they disagree → take the most conservative (smallest) k among them
+
+**Implementation note:** `train_linear_probe` in `utils/probe.py` needs to be updated to also record **train F1** per fold (currently only val F1 is returned), so that train−val gap can be computed.
+
+**Outputs:**
+- `outputs/k_selection_results.csv` — all metrics for every (k, layer) combination
+- `outputs/figures/k_selection_*.png` — tradeoff plots
+
+---
+
+### Stage 6: Full PCA Reduction + Probe Training
+
+Using the k selected in Stage 5:
+
+**PCA reduction:**
+- Independent PCA per layer → `outputs/activations_pca{k}.npy` (n_samples, n_layers, k)
+- `utils/analysis.py`: `reduce_activations_pca`
+
+**Binary probe (baseline for comparison with Goldowsky et al.):**
+- Labels: `truth` vs `deception` only — `honest_mistake` samples excluded
+- Rationale: Goldowsky et al.'s "honest" responses are all cases where the model knows the answer and says it truthfully; honest_mistake is our novel contribution and should not be mixed into the baseline binary comparison
+- Metric: **AUROC** (primary, as in Goldowsky et al.)
+- Regularization: test both `C=1.0` (our default) and `C=0.1` (Goldowsky's equivalent λ=10) to enable fair comparison
+- Output: `outputs/probe_results_binary.csv`
+
+**3-way direct probe (Logistic Regression):**
+- `probe_all_layers` on all layers → `outputs/probe_results_3way_lr.csv`
+- Plots: macro F1/layer, per-class F1/layer, top-5 confusion matrices
+
+**3-way direct probe (MLP):**
+- Architecture: `hidden_layer_sizes=(256,)`, ReLU, solver=adam — selected as primary; see session note 2026-03-28 for alternatives
+- `probe_all_layers_mlp` on all layers → `outputs/probe_results_3way_mlp.csv`
+- Same plots as LR; overlay comparison plots LR vs MLP
+
+**Cascaded probe (Logistic Regression):**
+- `probe_all_layers_cascaded` → `outputs/probe_results_cascaded_lr.csv`
+
+**Cascaded probe (MLP):**
+- `probe_all_layers_cascaded_mlp` → `outputs/probe_results_cascaded_mlp.csv`
+
+---
+
 ## Design Principles
 
 1. **Double-verified labels**: MC check (prior) + LLM judge (posterior). Keep only samples where both agree with intended label.
@@ -217,9 +280,17 @@ def extract_activations(question, response, system_prompt, model, tokenizer, dev
 - [x] `utils/analysis.py`: `reduce_activations_pca`, `save_results_csv`
 - [x] `utils/probe.py`: `train_linear_probe`, `train_cascaded_probe`, `probe_all_layers`, `probe_all_layers_cascaded`
 - [x] Notebook Part 6.1 Setup: load activations (11708 samples), label map, PCA timing benchmark (cell 36/37 executed)
-- [ ] Run full PCA reduction → `activations_pca128.npy` (28 layers × 128 components)
-- [ ] Run 3-way direct probe → `probe_results_3way.csv` + plots
-- [ ] (future) Approach 2: Cascaded probe
+- [ ] Update `train_linear_probe` in `utils/probe.py` to also return train F1 per fold
+- [ ] Add `train_mlp_probe` to `utils/probe.py` (3-way, hidden_layer_sizes=(256,), ReLU, adam)
+- [ ] Add `train_cascaded_mlp_probe` to `utils/probe.py`
+- [ ] Add `probe_all_layers_mlp` and `probe_all_layers_cascaded_mlp` wrappers to `utils/probe.py`
+- [ ] Notebook Part 6.0: k selection cell — run 3 representative layers × 6 k values, record 4 metrics, save `k_selection_results.csv` + plots
+- [ ] Select final k using kneedle elbow decision rule
+- [ ] Run full PCA reduction → `activations_pca{k}.npy` (28 layers × k components)
+- [ ] Run binary probe (LR, truth vs deception) → `probe_results_binary.csv`
+- [ ] Run 3-way direct probe LR → `probe_results_3way_lr.csv` + plots
+- [ ] Run 3-way direct probe MLP → `probe_results_3way_mlp.csv` + overlay plots
+- [ ] (future) Cascaded probe LR + MLP
 - [ ] (deferred) Visualization and analysis
 
 ---
@@ -273,6 +344,21 @@ def extract_activations(question, response, system_prompt, model, tokenizer, dev
   - 5.1: built `probe_dataset.csv` — factual (6/6 threshold from tqa_full + mmlu_full) + social (200 honest→truth, 200 deceptive→deception); merged and saved
   - 5.2: extracted activations for all samples with checkpoint every 50; label encoding truth=0, honest_mistake=1, deception=2
 - Saved `outputs/activations.npy` (n_samples, 28, 3584) and `outputs/labels.npy` — **not committed to git**, shared locally among team
+
+### 2026-03-28
+- Planned Stage 5 (PCA k Selection) and Stage 6 (Full Probe Training); updated Pipeline section accordingly
+- Stage 5 design: 3 representative layers at 25%/50%/75% of total depth (model-agnostic for benchmarking); k ∈ {16,32,64,128,256,512}; 4 metrics: variance explained, val macro F1, train−val F1 gap, training time; kneedle elbow for decision
+- Stage 6 design: binary probe (truth vs deception, honest_mistake excluded) + 3-way LR probe + 3-way MLP probe + cascaded LR + cascaded MLP
+- Binary probe rationale: Goldowsky et al.'s "honest" = model knows and tells truth = our `truth` class; honest_mistake is our novel contribution, not comparable
+- Primary comparison metric with Goldowsky et al.: AUROC; Recall @ 1% FPR deferred (requires control dataset — to discuss with team)
+- Noted C value difference: Goldowsky uses C=0.1 (λ=10), we use C=1.0; binary probe should test both for fair comparison
+- MLP probe design: `hidden_layer_sizes=(256,)`, ReLU, solver=adam selected as primary architecture; 3-way and cascaded both needed; binary MLP not needed
+- MLP architecture alternatives for team discussion: (A) `(256,)` — selected today; (B) `(256, 128)` — more expressive; (C) `(128,)` — most conservative
+
+**Pending discussion with team:**
+- Whether to implement Recall @ 1% FPR (requires a neutral control dataset of non-deception-related responses)
+- Whether to introduce a control dataset and how to source it
+- MLP architecture: confirm (256,) or switch to (B)/(C) after seeing results
 
 ---
 

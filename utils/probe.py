@@ -34,7 +34,8 @@ def train_linear_probe(
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     classes = sorted(set(labels))
 
-    fold_f1s = {c: [] for c in classes}
+    fold_f1s_val   = {c: [] for c in classes}
+    fold_f1s_train = {c: [] for c in classes}
     cm_accum = np.zeros((len(classes), len(classes)), dtype=int)
 
     for train_idx, val_idx in skf.split(activations, labels):
@@ -47,27 +48,146 @@ def train_linear_probe(
 
         clf = LogisticRegression(solver="saga", max_iter=max_iter, random_state=random_state, C=1.0)
         clf.fit(X_train, y_train)
-        y_pred = clf.predict(X_val)
 
-        f1s = f1_score(y_val, y_pred, labels=classes, average=None)
-        for cls, score in zip(classes, f1s):
-            fold_f1s[cls].append(score)
+        y_pred       = clf.predict(X_val)
+        y_train_pred = clf.predict(X_train)
+
+        f1s_val = f1_score(y_val, y_pred, labels=classes, average=None)
+        for cls, score in zip(classes, f1s_val):
+            fold_f1s_val[cls].append(score)
+
+        f1s_train = f1_score(y_train, y_train_pred, labels=classes, average=None)
+        for cls, score in zip(classes, f1s_train):
+            fold_f1s_train[cls].append(score)
 
         cm_accum += confusion_matrix(y_val, y_pred, labels=classes)
 
-    f1_per_class = {cls: float(np.mean(scores)) for cls, scores in fold_f1s.items()}
-    f1_macro = float(np.mean(list(f1_per_class.values())))
+    f1_per_class       = {cls: float(np.mean(scores)) for cls, scores in fold_f1s_val.items()}
+    f1_per_class_train = {cls: float(np.mean(scores)) for cls, scores in fold_f1s_train.items()}
+    f1_macro_val   = float(np.mean(list(f1_per_class.values())))
+    f1_macro_train = float(np.mean(list(f1_per_class_train.values())))
 
     row_sums = cm_accum.sum(axis=1, keepdims=True)
     cm_norm = cm_accum.astype(float) / np.where(row_sums == 0, 1, row_sums)
 
     return {
         "f1_per_class":          f1_per_class,
-        "f1_macro":              f1_macro,
+        "f1_per_class_train":    f1_per_class_train,
+        "f1_macro":              f1_macro_val,
+        "f1_macro_val":          f1_macro_val,
+        "f1_macro_train":        f1_macro_train,
         "confusion_matrix":      cm_accum,
         "confusion_matrix_norm": cm_norm,
         "classes":               classes,
     }
+
+
+def train_binary_probe(
+    activations: np.ndarray,
+    labels: np.ndarray,
+    n_splits: int = 5,
+    max_iter: int = 200,
+    random_state: int = 42,
+    C: float = 1.0,
+) -> dict:
+    """
+    Train a binary logistic regression probe (truth vs deception only).
+    honest_mistake samples are excluded.
+
+    Parameters
+    ----------
+    activations : (n_samples, hidden_dim)
+    labels      : (n_samples,) — string labels; honest_mistake rows are dropped internally
+    C           : inverse regularization strength (use C=0.1 to match Goldowsky et al. λ=10)
+
+    Returns
+    -------
+    dict with keys:
+        auroc                : float — mean AUROC across folds (primary metric)
+        f1_macro             : float — mean macro F1 across folds
+        f1_per_class         : dict {class_name: mean_f1_across_folds}
+        confusion_matrix     : np.ndarray (2, 2), accumulated counts
+        confusion_matrix_norm: np.ndarray (2, 2), row-normalized
+        classes              : ["deception", "truth"]
+        n_samples            : int — number of samples after filtering
+    """
+    mask = np.array(labels) != "honest_mistake"
+    activations = activations[mask]
+    labels      = np.array(labels)[mask]
+    n_samples   = len(labels)
+
+    classes = sorted(set(labels))  # ["deception", "truth"]
+    dec_idx = classes.index("deception")
+
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+    fold_f1s  = {c: [] for c in classes}
+    fold_aurocs = []
+    cm_accum  = np.zeros((len(classes), len(classes)), dtype=int)
+
+    for train_idx, val_idx in skf.split(activations, labels):
+        X_train, X_val = activations[train_idx], activations[val_idx]
+        y_train, y_val = labels[train_idx],      labels[val_idx]
+
+        scaler  = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_val   = scaler.transform(X_val)
+
+        clf = LogisticRegression(solver="saga", max_iter=max_iter, random_state=random_state, C=C)
+        clf.fit(X_train, y_train)
+
+        y_pred  = clf.predict(X_val)
+        y_proba = clf.predict_proba(X_val)[:, dec_idx]
+
+        f1s = f1_score(y_val, y_pred, labels=classes, average=None)
+        for cls, score in zip(classes, f1s):
+            fold_f1s[cls].append(score)
+
+        fold_aurocs.append(roc_auc_score((y_val == "deception").astype(int), y_proba))
+        cm_accum += confusion_matrix(y_val, y_pred, labels=classes)
+
+    f1_per_class = {cls: float(np.mean(scores)) for cls, scores in fold_f1s.items()}
+    f1_macro     = float(np.mean(list(f1_per_class.values())))
+    auroc        = float(np.mean(fold_aurocs))
+
+    row_sums = cm_accum.sum(axis=1, keepdims=True)
+    cm_norm  = cm_accum.astype(float) / np.where(row_sums == 0, 1, row_sums)
+
+    return {
+        "auroc":               auroc,
+        "f1_macro":            f1_macro,
+        "f1_per_class":        f1_per_class,
+        "confusion_matrix":    cm_accum,
+        "confusion_matrix_norm": cm_norm,
+        "classes":             classes,
+        "n_samples":           n_samples,
+    }
+
+
+def probe_all_layers_binary(
+    activations: np.ndarray,
+    labels: np.ndarray,
+    **kwargs,
+) -> list[dict]:
+    """
+    Run train_binary_probe for every layer.
+
+    Parameters
+    ----------
+    activations : (n_samples, n_layers, hidden_dim)
+
+    Returns
+    -------
+    list of dicts, one per layer (length = n_layers)
+    """
+    n_layers = activations.shape[1]
+    results  = []
+    for layer_idx in tqdm(range(n_layers), desc="binary probe (layers)"):
+        layer_acts = activations[:, layer_idx, :]
+        result     = train_binary_probe(layer_acts, labels, **kwargs)
+        result["layer"] = layer_idx
+        results.append(result)
+    return results
 
 
 def train_cascaded_probe(

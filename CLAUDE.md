@@ -51,30 +51,15 @@ project/
 │   ├── generation.py                      ← done
 │   ├── judge.py                           ← done (6 functions)
 │   ├── activation.py                      ← done (accepts system_prompt directly)
-│   ├── probe.py                           ← done (train_linear_probe, train_cascaded_probe, probe_all_layers, probe_all_layers_cascaded); MLP variants planned
-│   └── analysis.py                        ← done (reduce_activations_pca, save_results_csv)
+│   ├── probe.py                           ← done (train_linear_probe w/ train F1, train_binary_probe, probe_all_layers_binary, train_cascaded_probe, probe_all_layers, probe_all_layers_cascaded); MLP variants planned
+│   └── analysis.py                        ← done (reduce_activations_pca, save_results_csv, select_pca_k)
 ├── data/dataset/
-│   ├── truthfulQA_test_results.csv        ← MC check, 817 rows ✅
-│   ├── mmlu_test_results.csv              ← MC check, 14038 rows ✅
-│   ├── deception_dataset.csv              ← social scenarios, 400 rows (200 honest + 200 deceptive) ✅
-│   │                                         cols: pair_id, label, prompt, response, scenario, question
-│   ├── truthfulQA_responses.csv           ← 1215 rows, configs A/B/C, has row_id ✅
-│   ├── mmlu_responses.csv                 ← 20634 rows, configs A/B/C, has row_id ✅
-│   ├── scenario_responses_raw.csv         ← Qwen social responses, long format, checkpoint ✅
-│   ├── scenario_responses.csv             ← wide: pair_id, question, honest/deceptive scenario+response, 200 rows ✅
-│   ├── judge_truthfulqa_claude_haiku.csv  ← 1215 rows ✅
-│   ├── judge_mmlu_claude_haiku.csv        ← 20634 rows ✅
-│   ├── judge_truthfulqa_gpt4o_mini.csv    ← 1215 rows ✅
-│   ├── judge_mmlu_gpt4o_mini.csv          ← 20634 rows ✅
-│   ├── batch_truthfulqa_gpt4o_mini.jsonl  ✅
-│   ├── batch_mmlu_gpt4o_mini_{1-9}.jsonl  ← 9 splits, tiktoken-based (≤1.8M tokens each) ✅
-│   ├── tqa_full.csv                       ← votes + responses merged ✅
-│   ├── mmlu_full.csv                      ← votes + responses merged ✅
-│   └── probe_dataset.csv                  ← final merged dataset ✅
-└── outputs/                               ← NOT in git (too large)
-    ├── activations.npy                    ← (n_samples, 28, 3584), float32 ✅ — on HF Hub
-    ├── labels.npy                         ← (n_samples,), int: truth=0, honest_mistake=1, deception=2 ✅ — on HF Hub
-    └── activations_checkpoint.npz        ← intermediate checkpoint (safe to delete after run) ✅
+│   └── deception_dataset.csv              ← social scenarios, 400 rows (200 honest + 200 deceptive)
+│                                             cols: pair_id, label, prompt, response, scenario, question
+│                                             (other per-model CSVs generated during pipeline — see notebook)
+└── outputs/{model_name}/                  ← NOT in git; after each model run, all outputs moved here
+    │                                         contains: activations, labels, PCA outputs, probe results
+    └── figures/                              (see notebook for exact filenames and shapes)
 ```
 
 ---
@@ -172,11 +157,11 @@ def extract_activations(question, response, system_prompt, model, tokenizer, dev
 
 ---
 
-### Stage 5: PCA k Selection
+### Stage 5: PCA k Selection ✅
 
 Select optimal PCA components k before full-scale reduction. Analysis is **model-agnostic**: layers chosen by proportion of total depth, so methodology transfers to any model in the benchmark.
 
-**Representative layers:** 25%, 50%, 75% of total layers (rounded), e.g. for 28-layer Qwen2.5-7B → layers 7, 14, 21.
+**Representative layers:** 25%, 50%, 75% of total layers (formula: `round(n_layers * f) - 1`, 0-indexed), e.g. for 28-layer Qwen2.5-7B → layers 6, 13, 20.
 
 **k search space:** `{16, 32, 64, 128, 256, 512}` (powers of 2)
 
@@ -195,20 +180,23 @@ Select optimal PCA components k before full-scale reduction. Analysis is **model
 - If the three layers agree on an elbow → use that k
 - If they disagree → take the most conservative (smallest) k among them
 
-**Implementation note:** `train_linear_probe` in `utils/probe.py` needs to be updated to also record **train F1** per fold (currently only val F1 is returned), so that train−val gap can be computed.
+**Implementation:** `select_pca_k` in `utils/analysis.py` — fits PCA once at max_k per representative layer then slices for each k; calls `train_linear_probe` (which now also returns train F1).
+
+**Result:** k=64 selected — val F1 elbow agreed across all 3 representative layers; variance ~49% at k=64.
 
 **Outputs:**
-- `outputs/k_selection_results.csv` — all metrics for every (k, layer) combination
-- `outputs/figures/k_selection_*.png` — tradeoff plots
+- `outputs/pca_reduction_k_selection_results.csv` ✅ — all metrics for every (k, layer) combination
+- `outputs/figures/k_selection_tradeoff.png` ✅ — 4-metric tradeoff curves
 
 ---
 
 ### Stage 6: Full PCA Reduction + Probe Training
 
-Using the k selected in Stage 5:
+Using k=64 selected in Stage 5:
 
-**PCA reduction:**
-- Independent PCA per layer → `outputs/activations_pca{k}.npy` (n_samples, n_layers, k)
+**PCA reduction:** ✅
+- Independent PCA per layer → `outputs/activations_pca64.npy` (n_samples, 28, 64)
+- Components saved: `outputs/pca64_components.npy`; per-layer variance: `outputs/pca64_explained_variance.csv`
 - `utils/analysis.py`: `reduce_activations_pca`
 
 **Binary probe (baseline for comparison with Goldowsky et al.):**
@@ -216,11 +204,13 @@ Using the k selected in Stage 5:
 - Rationale: Goldowsky et al.'s "honest" responses are all cases where the model knows the answer and says it truthfully; honest_mistake is our novel contribution and should not be mixed into the baseline binary comparison
 - Metric: **AUROC** (primary, as in Goldowsky et al.)
 - Regularization: test both `C=1.0` (our default) and `C=0.1` (Goldowsky's equivalent λ=10) to enable fair comparison
-- Output: `outputs/probe_results_binary.csv`
+- `train_binary_probe` + `probe_all_layers_binary` implemented in `utils/probe.py` ✅
+- **Notebook cell 6.2: not yet written** (next session)
+- Output: `outputs/probe_results_binary_pca64.csv`
 
-**3-way direct probe (Logistic Regression):**
-- `probe_all_layers` on all layers → `outputs/probe_results_3way_lr.csv`
-- Plots: macro F1/layer, per-class F1/layer, top-5 confusion matrices
+**3-way direct probe (Logistic Regression):** ✅
+- `probe_all_layers` on all 28 layers → `outputs/probe_results_3way_pca64.csv`
+- Plots: macro F1/layer, per-class F1/layer, top-5 confusion matrices (saved to `outputs/figures/`)
 
 **3-way direct probe (MLP):**
 - Architecture: `hidden_layer_sizes=(256,)`, ReLU, solver=adam — selected as primary; see session note 2026-03-28 for alternatives
@@ -276,21 +266,23 @@ Using the k selected in Stage 5:
 - [x] Build `probe_dataset.csv` (factual: 6/6 threshold; social: all 200 pairs)
 - [x] Update `utils/activation.py` to accept `system_prompt` directly
 - [x] Extract activations → `activations.npy`, `labels.npy` (shared locally, not in git)
-- [ ] (future) Write `submit_batches.py` for sequential OpenAI batch submission
 - [x] `utils/analysis.py`: `reduce_activations_pca`, `save_results_csv`
 - [x] `utils/probe.py`: `train_linear_probe`, `train_cascaded_probe`, `probe_all_layers`, `probe_all_layers_cascaded`
 - [x] Notebook Part 6.1 Setup: load activations (11708 samples), label map, PCA timing benchmark (cell 36/37 executed)
-- [ ] Update `train_linear_probe` in `utils/probe.py` to also return train F1 per fold
+- [x] Update `train_linear_probe` in `utils/probe.py` to also return train F1 per fold
+- [x] `utils/analysis.py`: add `select_pca_k` (3 representative layers × 6 k values, 4 metrics)
+- [x] `utils/probe.py`: add `train_binary_probe`, `probe_all_layers_binary`
+- [x] Notebook Part 6.0: k selection cell — run + save `pca_reduction_k_selection_results.csv` + plot
+- [x] Select final k using kneedle elbow decision rule → k=64
+- [x] Run full PCA reduction → `activations_pca64.npy`, `pca64_components.npy`, `pca64_explained_variance.csv`
+- [x] Run 3-way direct probe LR → `probe_results_3way_pca64.csv` + plots (macro F1, per-class F1, top-5 confusion matrices)
+- [ ] Notebook Part 6.2: binary probe cell — `probe_all_layers_binary` on `activations_pca64.npy`, both C=1.0 and C=0.1
 - [ ] Add `train_mlp_probe` to `utils/probe.py` (3-way, hidden_layer_sizes=(256,), ReLU, adam)
 - [ ] Add `train_cascaded_mlp_probe` to `utils/probe.py`
 - [ ] Add `probe_all_layers_mlp` and `probe_all_layers_cascaded_mlp` wrappers to `utils/probe.py`
-- [ ] Notebook Part 6.0: k selection cell — run 3 representative layers × 6 k values, record 4 metrics, save `k_selection_results.csv` + plots
-- [ ] Select final k using kneedle elbow decision rule
-- [ ] Run full PCA reduction → `activations_pca{k}.npy` (28 layers × k components)
-- [ ] Run binary probe (LR, truth vs deception) → `probe_results_binary.csv`
-- [ ] Run 3-way direct probe LR → `probe_results_3way_lr.csv` + plots
-- [ ] Run 3-way direct probe MLP → `probe_results_3way_mlp.csv` + overlay plots
+- [ ] Run 3-way direct probe MLP → `probe_results_3way_mlp_pca64.csv` + overlay plots vs LR
 - [ ] (future) Cascaded probe LR + MLP
+- [ ] (future) Write `submit_batches.py` for sequential OpenAI batch submission
 - [ ] (deferred) Visualization and analysis
 
 ---
@@ -332,11 +324,6 @@ Using the k selected in Stage 5:
 - Discovered: RTX PRO 4500 (Blackwell, sm_120) incompatible with PyTorch 2.4.x — use RTX 4090
 - Confirmed: TruthfulQA + MMLU GPT-4o-mini judge batches both complete; `judge_truthfulqa_gpt4o_mini.csv` (1215 rows) and `judge_mmlu_gpt4o_mini.csv` (20634 rows) done; all 9 MMLU BATCH_IDS filled in notebook
 
-### 2026-03-24
-- `utils/analysis.py` created: `reduce_activations_pca` (independent PCA per layer, returns reduced acts / components / explained_var); `save_results_csv` (flattens probe result list into CSV, supports both 3-way and cascaded fields)
-- `utils/probe.py` completed: `train_linear_probe` (5-fold stratified CV, LogisticRegression saga, StandardScaler per fold); `train_cascaded_probe` (two-stage: stage1 truth vs non_truth, stage2 honest_mistake vs deception with oracle eval + AUROC); `probe_all_layers` / `probe_all_layers_cascaded` wrappers
-- Notebook Part 6 added: 6.1 Setup (import probe/analysis utils, load activations 11708×28×3584, label map, confirmed counts: truth=3566, honest_mistake=4305, deception=3837); PCA timing benchmark cell (layer 0: PCA 2.9s, probe 14.9s → est. 8.3 min for all 28 layers); full PCA cell for `activations_pca128.npy` (written, not yet run); 6.2 Direct 3-Way cell (probe_all_layers + 3 plot types: macro F1/layer, per-class F1/layer, top-5 confusion matrices — written, not yet run)
-
 ### 2026-03-23 (session 2)
 - Part 4 (social generation) confirmed complete: `scenario_responses.csv` 200 pairs ✅
 - `utils/activation.py`: refactored — removed broken `LIE_SYSTEM` import, signature changed from `label: str` to `system_prompt: str`
@@ -344,6 +331,11 @@ Using the k selected in Stage 5:
   - 5.1: built `probe_dataset.csv` — factual (6/6 threshold from tqa_full + mmlu_full) + social (200 honest→truth, 200 deceptive→deception); merged and saved
   - 5.2: extracted activations for all samples with checkpoint every 50; label encoding truth=0, honest_mistake=1, deception=2
 - Saved `outputs/activations.npy` (n_samples, 28, 3584) and `outputs/labels.npy` — **not committed to git**, shared locally among team
+
+### 2026-03-24
+- `utils/analysis.py` created: `reduce_activations_pca` (independent PCA per layer, returns reduced acts / components / explained_var); `save_results_csv` (flattens probe result list into CSV, supports both 3-way and cascaded fields)
+- `utils/probe.py` completed: `train_linear_probe` (5-fold stratified CV, LogisticRegression saga, StandardScaler per fold); `train_cascaded_probe` (two-stage: stage1 truth vs non_truth, stage2 honest_mistake vs deception with oracle eval + AUROC); `probe_all_layers` / `probe_all_layers_cascaded` wrappers
+- Notebook Part 6 added: 6.1 Setup (import probe/analysis utils, load activations 11708×28×3584, label map, confirmed counts: truth=3566, honest_mistake=4305, deception=3837); PCA timing benchmark cell (layer 0: PCA 2.9s, probe 14.9s → est. 8.3 min for all 28 layers); full PCA cell for `activations_pca128.npy` (written, not yet run); 6.2 Direct 3-Way cell (probe_all_layers + 3 plot types: macro F1/layer, per-class F1/layer, top-5 confusion matrices — written, not yet run)
 
 ### 2026-03-28
 - Planned Stage 5 (PCA k Selection) and Stage 6 (Full Probe Training); updated Pipeline section accordingly
@@ -360,12 +352,21 @@ Using the k selected in Stage 5:
 - Whether to introduce a control dataset and how to source it
 - MLP architecture: confirm (256,) or switch to (B)/(C) after seeing results
 
+### 2026-03-29
+- `utils/probe.py`: updated `train_linear_probe` to return `f1_macro_train`, `f1_per_class_train`, `f1_macro_val` (train F1 per fold); added `train_binary_probe` (truth vs deception, AUROC primary, supports C parameter for Goldowsky comparison) + `probe_all_layers_binary` wrapper
+- `utils/analysis.py`: added `select_pca_k` — fits PCA at max_k once per representative layer, slices for each k in search space, records 4 metrics; saves `pca_reduction_k_selection_results.csv`
+- Ran k selection (3 layers × 6 k values = 18 rows): k=64 selected — val F1 elbow agreed across layers 6, 13, 20; variance ~49% at k=64
+- Notebook cell 38: `select_pca_k` executed → `pca_reduction_k_selection_results.csv` ✅
+- Notebook cell 39: k selection tradeoff plot → `outputs/figures/k_selection_tradeoff.png` ✅
+- Notebook cell 40: full PCA64 reduction → `activations_pca64.npy` (11708, 28, 64), `pca64_components.npy`, `pca64_explained_variance.csv` ✅
+- Notebook cell 44: 3-way LR probe on all 28 layers with pca64 acts → `probe_results_3way_pca64.csv` + 3 plot types (macro F1/layer, per-class F1/layer, top-5 confusion matrices) ✅
+- Notebook section 6.2 (binary probe): placeholder cell added but not yet written — next session
+
 ---
 
 ## Miscellaneous
 
-- `outputs/probe_results.csv`: generated from old flawed dataset — do not reference
-- `outputs/activations.npy` / `outputs/labels.npy`: not in git (file size); stored on HuggingFace Hub at `mikrokozmoz/algoverse_2026spring_kmsa_qwen2.5_7b_instruct_activations` (private dataset)
+- Activations/labels for Qwen2.5-7B-Instruct: stored on HuggingFace Hub at `mikrokozmoz/algoverse_2026spring_kmsa_qwen2.5_7b_instruct_activations` (private dataset); not in git
 - API keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
 - Use `do_sample=False` (greedy decoding) for all response generation
 - Use `batch_size=1` for activation extraction (no padding effect on last token)

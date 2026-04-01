@@ -1,6 +1,9 @@
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
+from pathlib import Path
+from tqdm.auto import tqdm
 
 _loss_fn = nn.CrossEntropyLoss(reduction="none")
 
@@ -72,6 +75,120 @@ def knowledge_check_truthfulqa(
         "correct_answer": correct,
         "passed":         choices[best_idx] == correct,
     }
+
+
+def run_knowledge_check_truthfulqa(
+    dataset,
+    model,
+    tokenizer,
+    device: str,
+    output_path: Path,
+    checkpoint_every: int = 50,
+):
+    """
+    Run knowledge check on TruthfulQA MC dataset with checkpoint/resume support.
+
+    Skips entirely if output_path already contains all rows.
+    Resumes from partial checkpoint if output_path exists but is incomplete.
+
+    Returns
+    -------
+    kc_df     : pd.DataFrame — full results
+    passed_df : pd.DataFrame — rows where model answered correctly
+    failed_df : pd.DataFrame — rows where model answered incorrectly
+    """
+    output_path = Path(output_path)
+    total = len(dataset)
+
+    if output_path.exists():
+        kc_df = pd.read_csv(output_path)
+        if len(kc_df) == total:
+            print(f"[skip] Already complete ({total} rows): {output_path.name}")
+            passed_df = kc_df[kc_df["passed"]].reset_index(drop=True)
+            failed_df = kc_df[~kc_df["passed"]].reset_index(drop=True)
+            return kc_df, passed_df, failed_df
+        done_questions = set(kc_df["question"].tolist())
+        remaining = [item for item in dataset if item["question"] not in done_questions]
+        print(f"Resuming: {len(kc_df)} done, {len(remaining)} remaining")
+    else:
+        remaining = list(dataset)
+        print(f"Starting fresh: {total} items")
+
+    records = []
+    for i, item in enumerate(tqdm(remaining, desc="TruthfulQA knowledge check")):
+        records.append(knowledge_check_truthfulqa(item, model, tokenizer, device))
+        if (i + 1) % checkpoint_every == 0:
+            pd.DataFrame(records).to_csv(
+                output_path, mode="a", header=not output_path.exists(), index=False
+            )
+            records = []
+    if records:
+        pd.DataFrame(records).to_csv(
+            output_path, mode="a", header=not output_path.exists(), index=False
+        )
+
+    kc_df     = pd.read_csv(output_path)
+    passed_df = kc_df[kc_df["passed"]].reset_index(drop=True)
+    failed_df = kc_df[~kc_df["passed"]].reset_index(drop=True)
+    print(f"Done. Total: {len(kc_df)} | Passed: {len(passed_df)} | Failed: {len(failed_df)}")
+    return kc_df, passed_df, failed_df
+
+
+def run_knowledge_check_mmlu(
+    dataset,
+    model,
+    tokenizer,
+    device: str,
+    output_path: Path,
+    checkpoint_every: int = 50,
+):
+    """
+    Run knowledge check on MMLU dataset with checkpoint/resume support.
+
+    Skips entirely if output_path already contains all rows.
+    Resumes from partial checkpoint if output_path exists but is incomplete.
+
+    Returns
+    -------
+    kc_df     : pd.DataFrame — full results
+    passed_df : pd.DataFrame — rows where model answered correctly
+    failed_df : pd.DataFrame — rows where model answered incorrectly
+    """
+    output_path = Path(output_path)
+    total = len(dataset)
+
+    if output_path.exists():
+        kc_df = pd.read_csv(output_path)
+        if len(kc_df) == total:
+            print(f"[skip] Already complete ({total} rows): {output_path.name}")
+            passed_df = kc_df[kc_df["passed"]].reset_index(drop=True)
+            failed_df = kc_df[~kc_df["passed"]].reset_index(drop=True)
+            return kc_df, passed_df, failed_df
+        done_questions = set(kc_df["question"].tolist())
+        remaining = [item for item in dataset if item["question"] not in done_questions]
+        print(f"Resuming: {len(kc_df)} done, {len(remaining)} remaining")
+    else:
+        remaining = list(dataset)
+        print(f"Starting fresh: {total} items")
+
+    records = []
+    for i, item in enumerate(tqdm(remaining, desc="MMLU knowledge check")):
+        records.append(knowledge_check_mmlu(item, model, tokenizer, device))
+        if (i + 1) % checkpoint_every == 0:
+            pd.DataFrame(records).to_csv(
+                output_path, mode="a", header=not output_path.exists(), index=False
+            )
+            records = []
+    if records:
+        pd.DataFrame(records).to_csv(
+            output_path, mode="a", header=not output_path.exists(), index=False
+        )
+
+    kc_df     = pd.read_csv(output_path)
+    passed_df = kc_df[kc_df["passed"]].reset_index(drop=True)
+    failed_df = kc_df[~kc_df["passed"]].reset_index(drop=True)
+    print(f"Done. Total: {len(kc_df)} | Passed: {len(passed_df)} | Failed: {len(failed_df)}")
+    return kc_df, passed_df, failed_df
 
 
 def knowledge_check_mmlu(

@@ -68,6 +68,12 @@ def select_pca_k(
         layer_idx, layer_pct, k, variance_explained,
         f1_macro_val, f1_macro_train, f1_gap, train_time_sec
     """
+    output_path = Path(output_path)
+    if output_path.exists():
+        df = pd.read_csv(output_path)
+        print(f"[skip] Already complete ({len(df)} rows): {output_path.name}")
+        return df
+
     n_samples, n_layers, hidden_dim = activations.shape
     max_k = max(k_values)
 
@@ -128,6 +134,80 @@ def select_pca_k(
     return df
 
 
+def build_probe_dataset(
+    tqa_full,
+    mmlu_full,
+    scenario_resp_df,
+    output_path: Path,
+) -> pd.DataFrame:
+    """
+    Build and save probe_dataset.csv from judge results and scenario responses.
+
+    Skips if output_path already exists.
+
+    Factual rows: filter_factual applied to tqa_full and mmlu_full (strictest thresholds).
+    Social rows: honest → truth, deceptive → deception; system_prompt from scenario columns.
+
+    Returns
+    -------
+    pd.DataFrame with columns: question, response, label, system_prompt, domain, correct_answer
+    """
+    output_path = Path(output_path)
+
+    if output_path.exists():
+        df = pd.read_csv(output_path)
+        print(f"[skip] Loaded probe_dataset ({len(df)} rows): {output_path.name}")
+        return df
+
+    tqa_factual  = filter_factual(tqa_full,  "factual")
+    mmlu_factual = filter_factual(mmlu_full, "factual")
+
+    honest_rows = scenario_resp_df[["question", "honest_response", "honest_scenario"]].copy()
+    honest_rows.columns = ["question", "response", "system_prompt"]
+    honest_rows["label"] = "truth"
+
+    deceptive_rows = scenario_resp_df[["question", "deceptive_response", "deceptive_scenario"]].copy()
+    deceptive_rows.columns = ["question", "response", "system_prompt"]
+    deceptive_rows["label"] = "deception"
+
+    social = pd.concat([honest_rows, deceptive_rows], ignore_index=True)
+    social["domain"] = "social"
+    social["correct_answer"] = ""
+
+    probe_dataset = pd.concat([tqa_factual, mmlu_factual, social], ignore_index=True)
+    probe_dataset.to_csv(output_path, index=False)
+    print(f"Saved probe_dataset ({len(probe_dataset)} rows) → {output_path.name}")
+    print(f"\nLabel distribution:\n{probe_dataset['label'].value_counts().to_string()}")
+    print(f"\nDomain distribution:\n{probe_dataset['domain'].value_counts().to_string()}")
+    return probe_dataset
+
+
+def filter_factual(df, domain: str) -> pd.DataFrame:
+    """
+    Filter a full judge DataFrame into probe-ready rows using strictest vote thresholds.
+
+    Config A + votes_correct == 6 → truth
+    Config B + votes_correct == 0 → honest_mistake
+    Config C + votes_correct == 0 → deception
+
+    All other rows are discarded (inconsistent MC + judge signal).
+
+    Returns
+    -------
+    pd.DataFrame with columns: question, response, label, system_prompt, domain, correct_answer
+    """
+    truth     = df[(df["config"] == "A") & (df["votes_correct"] == 6)].copy()
+    truth["label"] = "truth"
+    mistake   = df[(df["config"] == "B") & (df["votes_correct"] == 0)].copy()
+    mistake["label"] = "honest_mistake"
+    deception = df[(df["config"] == "C") & (df["votes_correct"] == 0)].copy()
+    deception["label"] = "deception"
+
+    out = pd.concat([truth, mistake, deception], ignore_index=True)
+    out["domain"] = domain
+    return out[["question", "response", "label", "system_prompt", "domain", "correct_answer"]]
+
+
 def save_results_csv(results: list[dict], path: str | Path) -> pd.DataFrame:
     """
     Convert a list of per-layer probe result dicts to a DataFrame and save as CSV.
@@ -184,3 +264,57 @@ def save_results_csv(results: list[dict], path: str | Path) -> pd.DataFrame:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
     return df
+
+
+def run_pca_reduction(
+    activations: np.ndarray,
+    n_components: int,
+    acts_path: Path,
+    components_path: Path,
+    variance_path: Path,
+) -> np.ndarray:
+    """
+    Apply PCA independently per layer and save results.
+
+    Skips if acts_path and components_path already exist.
+
+    Parameters
+    ----------
+    activations     : (n_samples, n_layers, hidden_dim)
+    n_components    : number of PCA components (k)
+    acts_path       : path to save reduced activations .npy
+    components_path : path to save PCA components .npy
+    variance_path   : path to save per-layer explained variance CSV
+
+    Returns
+    -------
+    np.ndarray : reduced activations (n_samples, n_layers, n_components)
+    """
+    acts_path       = Path(acts_path)
+    components_path = Path(components_path)
+    variance_path   = Path(variance_path)
+
+    if acts_path.exists() and components_path.exists():
+        acts_reduced = np.load(acts_path)
+        print(f"[skip] Loaded reduced activations {acts_reduced.shape}: {acts_path.name}")
+        return acts_reduced
+
+    print(f"Running PCA ({n_components} components) across {activations.shape[1]} layers ...")
+    pca_result    = reduce_activations_pca(activations, n_components=n_components)
+    acts_reduced  = pca_result["activations"]
+    components    = pca_result["components"]
+    explained_var = pca_result["explained_var"]
+
+    np.save(acts_path,       acts_reduced)
+    np.save(components_path, components)
+    pd.DataFrame({
+        "layer": range(len(explained_var)),
+        "explained_var": explained_var,
+    }).to_csv(variance_path, index=False)
+
+    print(f"Saved {acts_path.name}       {acts_reduced.shape}")
+    print(f"Saved {components_path.name} {components.shape}")
+    print(f"Saved {variance_path.name}")
+    print(f"Explained variance — mean: {explained_var.mean():.3f}, "
+          f"min: {explained_var.min():.3f}, max: {explained_var.max():.3f}")
+    return acts_reduced

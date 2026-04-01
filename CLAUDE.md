@@ -44,19 +44,21 @@ FACTUAL_DECEPTION_SCENARIO = (
 ```
 project/
 ├── CLAUDE.md
-├── kaiyu_generation_and_probing.ipynb
-├── submit_batches.py                      ← [PLANNED] sequential OpenAI batch submission
+├── kaiyu_generation_and_probing.ipynb         ← original notebook (all stages)
+├── kaiyu_generation_and_probing_refactored.ipynb  ← refactored notebook (in progress)
 ├── utils/
-│   ├── knowledge_check.py                 ← done
-│   ├── generation.py                      ← done
-│   ├── judge.py                           ← done (6 functions)
-│   ├── activation.py                      ← done (accepts system_prompt directly)
-│   ├── probe.py                           ← done (train_linear_probe w/ train F1, train_binary_probe, probe_all_layers_binary, train_cascaded_probe, probe_all_layers, probe_all_layers_cascaded); MLP variants planned
-│   └── analysis.py                        ← done (reduce_activations_pca, save_results_csv, select_pca_k)
+│   ├── knowledge_check.py
+│   ├── generation.py
+│   ├── judge.py
+│   ├── activation.py
+│   ├── probe.py
+│   ├── analysis.py
+│   ├── plotting.py
+│   ├── settings.py                            ← gitignored (contains API keys); copy from settings_template.py
+│   └── settings_template.py                   ← tracked in git; fill in and rename to settings.py
 ├── data/dataset/
-│   ├── deception_dataset.csv              ← fixed; social scenarios, 400 rows (200 honest + 200 deceptive)
-│   │                                         cols: pair_id, label, prompt, response, scenario, question
-│   └── {model_slug}/                      ← per-model data (not in git)
+│   ├── deception_dataset.csv                  ← social scenarios, 400 rows (200 honest + 200 deceptive)
+│   └── {model_slug}/
 │       ├── probe_dataset.csv
 │       ├── knowledge_test/
 │       │   ├── truthfulQA_test_results.csv
@@ -66,20 +68,21 @@ project/
 │       │   ├── mmlu_responses.csv
 │       │   └── scenario_responses.csv
 │       └── judge/
-│           ├── tqa_full.csv               ← aggregated votes across all judges
-│           ├── mmlu_full.csv
+│           ├── truthfulQA_full.csv            ← aggregated votes across all judges
+│           ├── mmlu_full.csv                  ← aggregated votes across all judges
 │           └── {judge_slug}/
-│               ├── judge_truthfulqa.csv
+│               ├── judge_truthfulQA.csv
 │               ├── judge_mmlu.csv
-│               └── batch/                 ← JSONL batch files, temporary; gitignored
-└── outputs/{model_name}/                  ← NOT in git; one folder per model
-    ├── activations.npy                       (n_samples, n_layers, hidden_dim)
-    ├── labels.npy                            (n_samples,)
-    ├── activations_pca64.npy                 (n_samples, n_layers, 64)
-    ├── pca64_components.npy
+│               └── batch/                     ← gitignored; JSONL batch files, temporary
+└── outputs/{model_slug}/
+    ├── activations.npy                        ← gitignored (large; on HuggingFace Hub)
+    ├── activations_pca64.npy                  ← gitignored (large; on HuggingFace Hub)
+    ├── pca64_components.npy                   ← gitignored (large)
+    ├── activations_checkpoint.npz             ← gitignored
+    ├── labels.npy
     ├── pca64_explained_variance.csv
     ├── pca_reduction_k_selection_results.csv
-    ├── figures/                              shared figures (e.g. k_selection_tradeoff.png)
+    ├── figures/                               ← shared figures (e.g. k_selection_tradeoff.png)
     ├── binary/
     │   ├── probe_results_binary_pca64_C1.csv
     │   ├── probe_results_binary_pca64_C01.csv
@@ -235,50 +238,43 @@ Using k=64 selected in Stage 5:
 - Components saved: `outputs/pca64_components.npy`; per-layer variance: `outputs/pca64_explained_variance.csv`
 - `utils/analysis.py`: `reduce_activations_pca`
 
-**Binary probe (baseline for comparison with Goldowsky et al.):**
+**Binary probe (baseline for comparison with Goldowsky et al.):** ✅
 - Labels: `truth` vs `deception` only — `honest_mistake` samples excluded
 - Rationale: Goldowsky et al.'s "honest" responses are all cases where the model knows the answer and says it truthfully; honest_mistake is our novel contribution and should not be mixed into the baseline binary comparison
 - Metric: **AUROC** (primary, as in Goldowsky et al.)
 - Regularization: test both `C=1.0` (our default) and `C=0.1` (Goldowsky's equivalent λ=10) to enable fair comparison
 - `train_binary_probe` + `probe_all_layers_binary` implemented in `utils/probe.py` ✅
-- **Notebook cell 6.2: not yet written** (next session)
-- Output: `outputs/probe_results_binary_pca64.csv`
+- Outputs: `outputs/{model_slug}/binary/probe_results_binary_pca64_C1.csv` and `_C01.csv`
 
 **3-way direct probe (Logistic Regression):** ✅
-- `probe_all_layers` on all 28 layers → `outputs/probe_results_3way_pca64.csv`
-- Plots: macro F1/layer, per-class F1/layer, top-5 confusion matrices (saved to `outputs/figures/`)
+- `probe_all_layers` on all 28 layers → `outputs/{model_slug}/3way_lr/probe_results_3way_pca64.csv`
+- Plots: macro F1/layer, per-class F1/layer, top-5 confusion matrices (saved to `outputs/{model_slug}/3way_lr/figures/`)
 
-**3-way direct probe (MLP):**
+**3-way direct probe (MLP):** ✅
 - Architecture: `hidden_layer_sizes=(256,)`, ReLU, solver=adam — selected as primary; see session note 2026-03-28 for alternatives
-- `probe_all_layers_mlp` on all layers → `outputs/probe_results_3way_mlp.csv`
-- Same plots as LR; overlay comparison plots LR vs MLP
+- `probe_all_layers_mlp` on all layers → `outputs/{model_slug}/3way_mlp/probe_results_3way_mlp_pca64.csv`
+- Same plots as LR; overlay comparison LR vs MLP → `outputs/{model_slug}/figures/macro_f1_lr_vs_mlp.png`
 
-**Cascaded probe (Logistic Regression):**
-- `probe_all_layers_cascaded` → `outputs/probe_results_cascaded_lr.csv`
+**Cascaded probe (Logistic Regression):** ✅
+- `probe_all_layers_cascaded` → `outputs/{model_slug}/cascaded_lr/probe_results_cascaded_lr.csv`
 
-**Cascaded probe (MLP):**
-- `probe_all_layers_cascaded_mlp` → `outputs/probe_results_cascaded_mlp.csv`
+**Cascaded probe (MLP):** ✅
+- `probe_all_layers_cascaded_mlp` → `outputs/{model_slug}/cascaded_mlp/probe_results_cascaded_mlp.csv`
+- Overlay comparison cascaded LR vs MLP → `outputs/{model_slug}/figures/macro_f1_cascaded_lr_vs_mlp.png`
 
 ---
 
-## Refactoring Roadmap
+## Refactoring Roadmap ✅ COMPLETE
 
-To be done in a dedicated branch (`refactor/simplified-notebook`). The goal is a cleaner `kaiyu_generation_and_probing_simplified.ipynb` with less repeated boilerplate and better multi-model support.
+Branch `refactor/simplified-notebook`. Notebook: `kaiyu_generation_and_probing_refactored.ipynb`.
 
-### Structural changes
+### Key design decisions made during refactoring
 
-- **Data folder structure**: Migrate `data/dataset/` to per-model subfolders (`data/dataset/{model_slug}/knowledge_test`, `responses/`, `judge/{judge_slug}/batch/`). Only `deception_dataset.csv` stays at root. Delete abandoned `truth_set.csv`. Add `data/dataset/*/` and `data/dataset/*/*/batch/` to `.gitignore`.
-- **Output folder structure**: `outputs/{model_slug}/` per model; within each model folder, one subfolder per probe type (`binary/`, `3way_lr/`, `3way_mlp/`, `cascaded_lr/`, `cascaded_mlp/`), each with its own `figures/`. Shared figures (k-selection etc.) go in `outputs/{model_slug}/figures/`. `settings.py` derives all paths automatically from model slug.
-- **`utils/settings.py`**: Centralize all config — model ID, HF token, paths, hyperparameters. Derive `OUTPUT_DIR = Path("outputs") / model_slug` from model ID so switching models requires changing one variable. Add `settings_template.py` to git; add `settings.py` to `.gitignore` to avoid leaking tokens.
-- **All imports to cell 1**: Move scattered `import pickle`, `import seaborn`, `from utils.probe import ...` etc. into the top setup cell.
-- **`utils/plotting.py`**: Extract all plotting logic into reusable functions — `plot_macro_f1`, `plot_perclass_f1`, `plot_auroc`, `plot_confusion_matrix`. Notebook cells call one function per plot type.
-- **`utils/pipeline.py`**: A `run_probe_stage(fn, result_path, checkpoint_path, ...)` wrapper that handles skip-if-exists, checkpoint resume, and saving — eliminating repeated try/skip/pickle blocks from every probe cell.
-- **Confusion matrix from CSV**: Modify plotting logic to reconstruct confusion matrix from saved CSV columns (`cm_truth_truth` etc.) so plots work even when in-memory `results_*` variables are not defined (i.e. when loaded from CSV after kernel restart).
-
-### Bug fixes
-
-- **`train_cascaded_probe` (LR) confusion matrix**: Line 295 ignores stage 2 and labels all non-truth as `"honest_mistake"`. Fix to use oracle routing (same approach as the MLP version): `y_pred_full[~s2_mask_val] = s1_pred[~s2_mask_val]`, `y_pred_full[s2_mask_val] = s2_pred_oracle`. **Note: existing `probe_results_cascaded_lr.csv` confusion matrix columns are inaccurate — rerun after fix.**
-- **Variable not defined after CSV load**: `results_3way`, `results_mlp`, `results_cascaded`, `results_cascaded_mlp` are undefined when results are loaded from CSV. Replace `if CSV.exists() and not checkpoint.exists()` skip condition with `if 'results_*' not in dir()` check, or use the CSV-reconstruction approach above.
+- **`pipeline.py` not created** — skip/checkpoint/save logic went directly into `probe_all_layers_*` functions instead. Each function accepts `output_path` and `checkpoint_path` params.
+- **`aggregate_judge_votes`, `build_full`, `print_threshold_summary` stayed in `judge.py`** — plan said to move them to `analysis.py` but they were left where they made more sense.
+- **`results_to_df_binary` not needed** — the `_save_probe_csv` internal helper in `probe.py` handles all probe result serialization (including binary auroc/n_samples fields).
+- **Confusion matrix from CSV** — `plot_top_confusion_matrices` in `plotting.py` reconstructs from `cm_norm_{true}_{pred}` columns; no in-memory `results_*` variables required.
+- **`train_cascaded_probe` (LR) routing bug fixed** — both LR and MLP cascaded probes now use `s1_pred` routing for the confusion matrix (stage 1 prediction routes to stage 2); old `probe_results_cascaded_lr.csv` was deleted and rerun.
 
 ---
 
@@ -315,7 +311,7 @@ To be done in a dedicated branch (`refactor/simplified-notebook`). The goal is a
 - [x] Notebook: OpenAI batch cells — JSONL-only, no auto-submit, 3-layer check (CSV → JSONL → generate)
 - [x] Notebook: tiktoken-based MMLU split → 9 JSONL files
 - [x] Notebook: MMLU parse cell → `BATCH_IDS` list
-- [x] Notebook: 3.3 vote aggregation → `tqa_full.csv`, `mmlu_full.csv`
+- [x] Notebook: 3.3 vote aggregation → `truthfulQA_full.csv`, `mmlu_full.csv`
 - [x] Notebook: Part 4 social scenario response generation cell
 - [x] TruthfulQA GPT-4o-mini judge: batch submitted, results parsed, `judge_truthfulqa_gpt4o_mini.csv` complete
 - [x] MMLU GPT-4o-mini judge: all 9 splits submitted, `BATCH_IDS` filled, `judge_mmlu_gpt4o_mini.csv` complete
@@ -340,19 +336,42 @@ To be done in a dedicated branch (`refactor/simplified-notebook`). The goal is a
 - [x] Run 3-way direct probe MLP → `probe_results_3way_mlp_pca64.csv` + overlay plots vs LR
 - [x] Cascaded probe LR + MLP — cells written and run
 
-**Refactoring branch (`refactor/simplified-notebook`) — see Refactoring Roadmap for details:**
-- [ ] Create `utils/settings.py` + `settings_template.py`; update `.gitignore`
-- [ ] Create `utils/plotting.py` (macro F1, per-class F1, AUROC, confusion matrix functions)
-- [ ] Create `utils/pipeline.py` (`run_probe_stage` skip/checkpoint/save wrapper)
-- [ ] Migrate data folder to `data/dataset/{model_slug}/` structure; delete `truth_set.csv`
-- [ ] Migrate outputs to `outputs/{model_slug}/{probe_type}/` structure
-- [ ] Rewrite `kaiyu_generation_and_probing_simplified.ipynb` using new utils
-- [ ] Fix `train_cascaded_probe` (LR) confusion matrix bug — rerun `probe_results_cascaded_lr.csv` after fix
-- [ ] Fix `results_*` variable not defined after CSV load (reconstruct cm from CSV columns)
+**Refactoring branch (`refactor/simplified-notebook`) — COMPLETE:**
+- [x] Migrate data folder to `data/dataset/{model_slug}/` structure; delete `truth_set.csv`; update `.gitignore`
+- [x] Migrate outputs to `outputs/{model_slug}/{probe_type}/` structure; update `.gitignore`
+- [x] Create `utils/settings.py` + `settings_template.py`
+- [x] Fix `train_cascaded_probe` (LR) routing bug — both LR and MLP now use s1_pred routing consistently
+- [x] Add `C` parameter to `train_linear_probe` and `train_cascaded_probe` (was hardcoded C=1.0)
+- [x] Reorder `utils/probe.py` — each (train_*, probe_all_layers_*) pair now adjacent
+- [x] Add skip/checkpoint/save to all 5 `probe_all_layers_*` functions (`output_path`, `checkpoint_path` params)
+- [x] Add high-level run functions to `utils/knowledge_check.py`
+- [x] Add high-level run functions to `utils/generation.py` (including `max_new_tokens`, `do_sample` params)
+- [x] Add high-level run functions to `utils/judge.py` (full batch polling loops)
+- [x] Add `filter_factual`, `build_probe_dataset`, `run_pca_reduction` to `utils/analysis.py`
+- [x] Create `utils/plotting.py` — `plot_macro_f1`, `plot_perclass_f1`, `plot_auroc`, `plot_top_confusion_matrices`; save to file only, reconstruct CM from CSV columns
+- [x] Rewrite all notebook cells (Parts 1–6) using new utils; all cells are single function calls
+- [x] `results_*` variable issue resolved — all `probe_all_layers_*` return DataFrames; CSV loaded on skip
 
 ---
 
 ## Session Notes
+
+### 2026-04-01 (session 3) — Refactoring complete
+
+- `probe_all_layers_cascaded_mlp` updated to match other four `probe_all_layers_*` functions (skip/checkpoint/save pattern)
+- `utils/plotting.py` created: `plot_macro_f1`, `plot_perclass_f1`, `plot_auroc`, `plot_top_confusion_matrices` — all save to file only; CMs reconstructed from CSV columns; `_ensure_list` helper normalises single df or list of (df, label) tuples
+- Notebook fully written (Parts 1–6): import cell updated with plotting imports; cells 6.2–6.6 filled with single probe calls + plotting calls after each; overlay comparison plots (LR vs MLP, cascaded LR vs cascaded MLP) in `outputs/{model_slug}/figures/`
+- `generate_response` / `run_factual_generation` / `run_scenario_generation` updated to accept and pass `max_new_tokens` and `do_sample` params; notebook cells 3.1.1, 3.2.1, Part 4 updated to pass `MAX_NEW_TOKENS, DO_SAMPLE` from settings
+- Full code review confirmed: all function signatures and call sites consistent; `deception_dataset.csv` uses `prompt` column (confirmed); no functional bugs found
+- Refactoring roadmap complete; `pipeline.py` not created (logic in probe functions directly); `aggregate_judge_votes` etc. stayed in `judge.py` (not moved to analysis.py as originally planned)
+
+### 2026-04-01 (session 2) — Refactoring branch
+- Folder structure migration complete: `data/dataset/{model_slug}/` and `outputs/{model_slug}/{probe_type}/`; `.gitignore` updated for new paths; `truth_set.csv` deleted; all batch `.jsonl` files deleted; committed and pushed to `refactor/simplified-notebook`
+- CLAUDE.md File Structure updated: removed `← done` comments, updated filenames (`tqa_full` → `truthfulQA_full`, `judge_truthfulqa` → `judge_truthfulQA`), added new utils, added `kaiyu_generation_and_probing_refactored.ipynb`
+- `utils/probe.py` refactored: reordered so each (train_*, probe_all_layers_*) pair is adjacent; added `C` parameter to `train_linear_probe` and `train_cascaded_probe`; fixed routing consistency — both LR and MLP cascaded probes now use s1_pred routing (stage 1 prediction routes to stage 2, not oracle/true labels); `probe_results_cascaded_lr.csv` and `probe_results_cascaded_mlp.csv` deleted and must be rerun
+- `utils/settings.py` + `settings_template.py` created: all paths, system prompts, hyperparameters centralized; `MODEL_SLUG` derived from `MODEL_ID`; `HF_ACTIVATIONS_REPO` uses `MODEL_SLUG.replace('-', '_')`; `settings.py` gitignored
+- Refactoring plan finalized: `knowledge_check.py` / `generation.py` / `judge.py` get high-level run functions with checkpoint/resume; `analysis.py` gets `aggregate_judge_votes`, `build_full`, `print_threshold_summary`, `filter_factual`, `results_to_df_binary`; `plotting.py` saves to file only (no inline display); `pipeline.py` handles skip-if-exists only
+- Notebook Part 1 written: imports (all utils, `from utils.settings import *`), reproducibility seeds, output dir creation, `deception_df` load, model + tokenizer load
 
 ### 2026-03-19
 - Refactored `knowledge_check.py`: added `knowledge_check_truthfulqa`, `knowledge_check_mmlu`

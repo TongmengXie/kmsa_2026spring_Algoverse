@@ -7,15 +7,28 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Large files — too big for GitHub (on HuggingFace Hub instead)
-outputs/activations.npy
-outputs/activations_pca*.npy
-outputs/pca*_components.npy
-outputs/activations_checkpoint.npz
+outputs/*/activations.npy
+outputs/*/activations_pca*.npy
+outputs/*/pca*_components.npy
+outputs/*/activations_checkpoint.npz
+
+# HuggingFace download cache
+outputs/.cache/
 
 # Small outputs — tracked in git
-# outputs/labels.npy          ✅ 92K
-# outputs/figures/             ✅ ~1MB
-# outputs/pca*_explained_variance.csv  ✅
-# outputs/probe_results_*.csv  ✅
-# outputs/probe_results_*_checkpoint.pkl  (medium, optional — see below)
-outputs/probe_results_*_checkpoint.pkl
+# outputs/{model_slug}/labels.npy                     ✅ 92K
+# outputs/{model_slug}/figures/                        ✅ ~1MB
+# outputs/{model_slug}/pca*_explained_variance.csv    ✅
+# outputs/{model_slug}/{probe_type}/*.csv              ✅
+# outputs/{model_slug}/{probe_type}/figures/           ✅
+# outputs/*/probe_results_*_checkpoint.pkl  (medium, optional — see below)
+outputs/*/probe_results_*_checkpoint.pkl
+
+# Per-model data (not in git — too large or model-specific)
+data/dataset/*/responses/*_raw.csv
+
+# Per-model batch files (temporary, generated during judging)
+data/dataset/*/judge/*/batch/
+
+# settings.py contains API keys — use settings_template.py instead
+utils/settings.py

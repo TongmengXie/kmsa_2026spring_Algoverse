@@ -32,3 +32,4 @@ data/dataset/*/judge/*/batch/
 
 # settings.py contains API keys — use settings_template.py instead
 utils/settings.py
+outputs/qwen2.5-7b-instruct/cascaded_mlp/checkpoint_cascaded_mlp.pkl

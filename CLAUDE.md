@@ -54,12 +54,48 @@ project/
 │   ├── probe.py                           ← done (train_linear_probe w/ train F1, train_binary_probe, probe_all_layers_binary, train_cascaded_probe, probe_all_layers, probe_all_layers_cascaded); MLP variants planned
 │   └── analysis.py                        ← done (reduce_activations_pca, save_results_csv, select_pca_k)
 ├── data/dataset/
-│   └── deception_dataset.csv              ← social scenarios, 400 rows (200 honest + 200 deceptive)
-│                                             cols: pair_id, label, prompt, response, scenario, question
-│                                             (other per-model CSVs generated during pipeline — see notebook)
-└── outputs/{model_name}/                  ← NOT in git; after each model run, all outputs moved here
-    │                                         contains: activations, labels, PCA outputs, probe results
-    └── figures/                              (see notebook for exact filenames and shapes)
+│   ├── deception_dataset.csv              ← fixed; social scenarios, 400 rows (200 honest + 200 deceptive)
+│   │                                         cols: pair_id, label, prompt, response, scenario, question
+│   └── {model_slug}/                      ← per-model data (not in git)
+│       ├── probe_dataset.csv
+│       ├── knowledge_test/
+│       │   ├── truthfulQA_test_results.csv
+│       │   └── mmlu_test_results.csv
+│       ├── responses/
+│       │   ├── truthfulQA_responses.csv
+│       │   ├── mmlu_responses.csv
+│       │   └── scenario_responses.csv
+│       └── judge/
+│           ├── tqa_full.csv               ← aggregated votes across all judges
+│           ├── mmlu_full.csv
+│           └── {judge_slug}/
+│               ├── judge_truthfulqa.csv
+│               ├── judge_mmlu.csv
+│               └── batch/                 ← JSONL batch files, temporary; gitignored
+└── outputs/{model_name}/                  ← NOT in git; one folder per model
+    ├── activations.npy                       (n_samples, n_layers, hidden_dim)
+    ├── labels.npy                            (n_samples,)
+    ├── activations_pca64.npy                 (n_samples, n_layers, 64)
+    ├── pca64_components.npy
+    ├── pca64_explained_variance.csv
+    ├── pca_reduction_k_selection_results.csv
+    ├── figures/                              shared figures (e.g. k_selection_tradeoff.png)
+    ├── binary/
+    │   ├── probe_results_binary_pca64_C1.csv
+    │   ├── probe_results_binary_pca64_C01.csv
+    │   └── figures/
+    ├── 3way_lr/
+    │   ├── probe_results_3way_pca64.csv
+    │   └── figures/
+    ├── 3way_mlp/
+    │   ├── probe_results_3way_mlp_pca64.csv
+    │   └── figures/
+    ├── cascaded_lr/
+    │   ├── probe_results_cascaded_lr.csv
+    │   └── figures/
+    └── cascaded_mlp/
+        ├── probe_results_cascaded_mlp.csv
+        └── figures/
 ```
 
 ---
@@ -225,6 +261,27 @@ Using k=64 selected in Stage 5:
 
 ---
 
+## Refactoring Roadmap
+
+To be done in a dedicated branch (`refactor/simplified-notebook`). The goal is a cleaner `kaiyu_generation_and_probing_simplified.ipynb` with less repeated boilerplate and better multi-model support.
+
+### Structural changes
+
+- **Data folder structure**: Migrate `data/dataset/` to per-model subfolders (`data/dataset/{model_slug}/knowledge_test`, `responses/`, `judge/{judge_slug}/batch/`). Only `deception_dataset.csv` stays at root. Delete abandoned `truth_set.csv`. Add `data/dataset/*/` and `data/dataset/*/*/batch/` to `.gitignore`.
+- **Output folder structure**: `outputs/{model_slug}/` per model; within each model folder, one subfolder per probe type (`binary/`, `3way_lr/`, `3way_mlp/`, `cascaded_lr/`, `cascaded_mlp/`), each with its own `figures/`. Shared figures (k-selection etc.) go in `outputs/{model_slug}/figures/`. `settings.py` derives all paths automatically from model slug.
+- **`utils/settings.py`**: Centralize all config — model ID, HF token, paths, hyperparameters. Derive `OUTPUT_DIR = Path("outputs") / model_slug` from model ID so switching models requires changing one variable. Add `settings_template.py` to git; add `settings.py` to `.gitignore` to avoid leaking tokens.
+- **All imports to cell 1**: Move scattered `import pickle`, `import seaborn`, `from utils.probe import ...` etc. into the top setup cell.
+- **`utils/plotting.py`**: Extract all plotting logic into reusable functions — `plot_macro_f1`, `plot_perclass_f1`, `plot_auroc`, `plot_confusion_matrix`. Notebook cells call one function per plot type.
+- **`utils/pipeline.py`**: A `run_probe_stage(fn, result_path, checkpoint_path, ...)` wrapper that handles skip-if-exists, checkpoint resume, and saving — eliminating repeated try/skip/pickle blocks from every probe cell.
+- **Confusion matrix from CSV**: Modify plotting logic to reconstruct confusion matrix from saved CSV columns (`cm_truth_truth` etc.) so plots work even when in-memory `results_*` variables are not defined (i.e. when loaded from CSV after kernel restart).
+
+### Bug fixes
+
+- **`train_cascaded_probe` (LR) confusion matrix**: Line 295 ignores stage 2 and labels all non-truth as `"honest_mistake"`. Fix to use oracle routing (same approach as the MLP version): `y_pred_full[~s2_mask_val] = s1_pred[~s2_mask_val]`, `y_pred_full[s2_mask_val] = s2_pred_oracle`. **Note: existing `probe_results_cascaded_lr.csv` confusion matrix columns are inaccurate — rerun after fix.**
+- **Variable not defined after CSV load**: `results_3way`, `results_mlp`, `results_cascaded`, `results_cascaded_mlp` are undefined when results are loaded from CSV. Replace `if CSV.exists() and not checkpoint.exists()` skip condition with `if 'results_*' not in dir()` check, or use the CSV-reconstruction approach above.
+
+---
+
 ## Design Principles
 
 1. **Double-verified labels**: MC check (prior) + LLM judge (posterior). Keep only samples where both agree with intended label.
@@ -276,14 +333,22 @@ Using k=64 selected in Stage 5:
 - [x] Select final k using kneedle elbow decision rule → k=64
 - [x] Run full PCA reduction → `activations_pca64.npy`, `pca64_components.npy`, `pca64_explained_variance.csv`
 - [x] Run 3-way direct probe LR → `probe_results_3way_pca64.csv` + plots (macro F1, per-class F1, top-5 confusion matrices)
-- [ ] Notebook Part 6.2: binary probe cell — `probe_all_layers_binary` on `activations_pca64.npy`, both C=1.0 and C=0.1
-- [ ] Add `train_mlp_probe` to `utils/probe.py` (3-way, hidden_layer_sizes=(256,), ReLU, adam)
-- [ ] Add `train_cascaded_mlp_probe` to `utils/probe.py`
-- [ ] Add `probe_all_layers_mlp` and `probe_all_layers_cascaded_mlp` wrappers to `utils/probe.py`
-- [ ] Run 3-way direct probe MLP → `probe_results_3way_mlp_pca64.csv` + overlay plots vs LR
-- [ ] (future) Cascaded probe LR + MLP
-- [ ] (future) Write `submit_batches.py` for sequential OpenAI batch submission
-- [ ] (deferred) Visualization and analysis
+- [x] Notebook Part 6.2: binary probe cell — `probe_all_layers_binary` on `activations_pca64.npy`, both C=1.0 and C=0.1
+- [x] Add `train_mlp_probe` to `utils/probe.py` (3-way, hidden_layer_sizes=(256,), ReLU, adam)
+- [x] Add `train_cascaded_mlp_probe` to `utils/probe.py`
+- [x] Add `probe_all_layers_mlp` and `probe_all_layers_cascaded_mlp` wrappers to `utils/probe.py`
+- [x] Run 3-way direct probe MLP → `probe_results_3way_mlp_pca64.csv` + overlay plots vs LR
+- [x] Cascaded probe LR + MLP — cells written and run
+
+**Refactoring branch (`refactor/simplified-notebook`) — see Refactoring Roadmap for details:**
+- [ ] Create `utils/settings.py` + `settings_template.py`; update `.gitignore`
+- [ ] Create `utils/plotting.py` (macro F1, per-class F1, AUROC, confusion matrix functions)
+- [ ] Create `utils/pipeline.py` (`run_probe_stage` skip/checkpoint/save wrapper)
+- [ ] Migrate data folder to `data/dataset/{model_slug}/` structure; delete `truth_set.csv`
+- [ ] Migrate outputs to `outputs/{model_slug}/{probe_type}/` structure
+- [ ] Rewrite `kaiyu_generation_and_probing_simplified.ipynb` using new utils
+- [ ] Fix `train_cascaded_probe` (LR) confusion matrix bug — rerun `probe_results_cascaded_lr.csv` after fix
+- [ ] Fix `results_*` variable not defined after CSV load (reconstruct cm from CSV columns)
 
 ---
 
@@ -361,6 +426,19 @@ Using k=64 selected in Stage 5:
 - Notebook cell 40: full PCA64 reduction → `activations_pca64.npy` (11708, 28, 64), `pca64_components.npy`, `pca64_explained_variance.csv` ✅
 - Notebook cell 44: 3-way LR probe on all 28 layers with pca64 acts → `probe_results_3way_pca64.csv` + 3 plot types (macro F1/layer, per-class F1/layer, top-5 confusion matrices) ✅
 - Notebook section 6.2 (binary probe): placeholder cell added but not yet written — next session
+
+### 2026-04-01
+- Notebook 6.2: binary probe cell written and run — `probe_results_binary_pca64_C1.csv` + `probe_results_binary_pca64_C01.csv` ✅; plot shows both C=1.0 and C=0.1 AUROC per layer (nearly identical, ~0.95–0.99 across all layers)
+- Notebook 6.3 Approach 2 (MLP 3-way): cell written; `utils/probe.py` added `train_mlp_probe`, `probe_all_layers_mlp` ✅
+- Notebook 6.4 (Cascaded LR): cell written and run — `probe_results_cascaded_lr.csv` ✅; **note: confusion matrix columns in this CSV are inaccurate** (LR version ignores stage 2, labels all non-truth as `honest_mistake`) — to be fixed in refactoring branch
+- Notebook 6.5 (Cascaded MLP): cell written; `utils/probe.py` added `train_cascaded_mlp_probe`, `probe_all_layers_cascaded_mlp` ✅; fixed shape mismatch bug in oracle routing (replaced `y_pred_full == "non_truth"` mask with `s2_mask_val`)
+- Activation loading cell updated: added `tqdm.wrapattr` progress bar for local `.npy` load
+- Discussed and documented refactoring plan for `refactor/simplified-notebook` branch: `utils/settings.py`, `utils/plotting.py`, `utils/pipeline.py`, per-model data/output folder structure, simplified notebook
+- Updated CLAUDE.md: added Refactoring Roadmap section, updated File Structure with new `data/dataset/{model_slug}/` and `outputs/{model_slug}/{probe_type}/` layouts
+
+**Pending team discussion:**
+- Whether to report binary probe with C=1.0 only (internal comparison) or also C=0.1 (Goldowsky comparison) — two curves nearly identical
+- Cascaded LR confusion matrix is inaccurate — inform team before reviewing those plots
 
 ---
 

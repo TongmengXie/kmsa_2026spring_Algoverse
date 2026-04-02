@@ -272,11 +272,16 @@ def run_pca_reduction(
     acts_path: Path,
     components_path: Path,
     variance_path: Path,
+    hf_repo: str = "",
+    hf_token: str = "",
 ) -> np.ndarray:
     """
     Apply PCA independently per layer and save results.
 
-    Skips if acts_path and components_path already exist.
+    Priority:
+    1. Load from local acts_path / components_path if both exist.
+    2. Download from HuggingFace Hub (hf_repo) if local files missing.
+    3. Compute from scratch using the activations array.
 
     Parameters
     ----------
@@ -285,6 +290,8 @@ def run_pca_reduction(
     acts_path       : path to save reduced activations .npy
     components_path : path to save PCA components .npy
     variance_path   : path to save per-layer explained variance CSV
+    hf_repo         : HuggingFace Hub repo ID (optional)
+    hf_token        : HuggingFace token (optional)
 
     Returns
     -------
@@ -294,11 +301,35 @@ def run_pca_reduction(
     components_path = Path(components_path)
     variance_path   = Path(variance_path)
 
+    # ── 1. Local ──────────────────────────────────────────────────────────
     if acts_path.exists() and components_path.exists():
         acts_reduced = np.load(acts_path)
         print(f"[skip] Loaded reduced activations {acts_reduced.shape}: {acts_path.name}")
         return acts_reduced
 
+    # ── 2. HuggingFace Hub ────────────────────────────────────────────────
+    if hf_repo:
+        try:
+            from huggingface_hub import hf_hub_download
+            try:
+                from huggingface_hub import enable_progress_bars
+                enable_progress_bars()
+            except ImportError:
+                pass
+            print(f"Local files not found. Downloading from {hf_repo} ...")
+            for path in [acts_path, components_path]:
+                hf_hub_download(
+                    repo_id=hf_repo, filename=path.name,
+                    repo_type="dataset", token=hf_token,
+                    local_dir=str(acts_path.parent),
+                )
+            acts_reduced = np.load(acts_path)
+            print(f"[HF] Loaded reduced activations {acts_reduced.shape}: {acts_path.name}")
+            return acts_reduced
+        except Exception as e:
+            print(f"Download failed ({e})")
+
+    # ── 3. Compute from scratch ───────────────────────────────────────────
     print(f"Running PCA ({n_components} components) across {activations.shape[1]} layers ...")
     pca_result    = reduce_activations_pca(activations, n_components=n_components)
     acts_reduced  = pca_result["activations"]

@@ -22,10 +22,21 @@ OPENAI_API_KEY = ""  # fill in your key
 # HuggingFace token — used for downloading model weights and uploading activations
 HF_TOKEN = ""  # fill in your token
 
+# ── Judge Models ─────────────────────────────────────────────────────────────
+
+# Anthropic judge model
+JUDGE_CLAUDE_HAIKU_MODEL = "claude-haiku-4-5-20251001"
+
+# OpenAI judge model
+JUDGE_GPT4O_MINI_MODEL = "gpt-4o-mini"
+
 # ── PCA ───────────────────────────────────────────────────────────────────────
 
 # Number of PCA components selected via elbow analysis in Stage 5
 PCA_K = 64
+
+# k values to search during PCA component selection (Stage 5)
+PCA_K_VALUES = [16, 32, 64, 128, 256, 512]
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -59,6 +70,19 @@ MMLU_FULL_PATH            = JUDGE_DIR / "mmlu_full.csv"        # aggregated vote
 JUDGE_CLAUDE_HAIKU_DIR    = JUDGE_DIR / "claude_haiku"
 JUDGE_GPT4O_MINI_DIR      = JUDGE_DIR / "gpt4o_mini"
 
+# Per-judge result files, batch state files, and batch JSONL directories
+JUDGE_CLAUDE_HAIKU_TQA_PATH   = JUDGE_CLAUDE_HAIKU_DIR / "judge_truthfulQA.csv"
+JUDGE_CLAUDE_HAIKU_TQA_STATE  = JUDGE_CLAUDE_HAIKU_DIR / "judge_truthfulQA_state.json"
+JUDGE_CLAUDE_HAIKU_MMLU_PATH  = JUDGE_CLAUDE_HAIKU_DIR / "judge_mmlu.csv"
+JUDGE_CLAUDE_HAIKU_MMLU_STATE = JUDGE_CLAUDE_HAIKU_DIR / "judge_mmlu_state.json"
+JUDGE_CLAUDE_HAIKU_BATCH_DIR  = JUDGE_CLAUDE_HAIKU_DIR / "batch"
+
+JUDGE_GPT4O_MINI_TQA_PATH     = JUDGE_GPT4O_MINI_DIR / "judge_truthfulQA.csv"
+JUDGE_GPT4O_MINI_TQA_STATE    = JUDGE_GPT4O_MINI_DIR / "judge_truthfulQA_state.json"
+JUDGE_GPT4O_MINI_MMLU_PATH    = JUDGE_GPT4O_MINI_DIR / "judge_mmlu.csv"
+JUDGE_GPT4O_MINI_MMLU_STATE   = JUDGE_GPT4O_MINI_DIR / "judge_mmlu_state.json"
+JUDGE_GPT4O_MINI_BATCH_DIR    = JUDGE_GPT4O_MINI_DIR / "batch"
+
 # Probe dataset (input to activation extraction)
 PROBE_DATASET_PATH        = DATA_DIR / "probe_dataset.csv"
 
@@ -71,7 +95,7 @@ ACTIVATIONS_PCA_PATH       = OUTPUT_DIR / f"activations_pca{PCA_K}.npy"
 ACTIVATIONS_CHECKPOINT_PATH = OUTPUT_DIR / "activations_checkpoint.npz"
 PCA_COMPONENTS_PATH        = OUTPUT_DIR / f"pca{PCA_K}_components.npy"
 
-# Small output files — tracked in git
+# Labels file — gitignored; stored on HuggingFace Hub alongside activations
 LABELS_PATH                = OUTPUT_DIR / "labels.npy"
 PCA_VARIANCE_PATH          = OUTPUT_DIR / f"pca{PCA_K}_explained_variance.csv"
 PCA_K_SELECTION_PATH       = OUTPUT_DIR / "pca_reduction_k_selection_results.csv"

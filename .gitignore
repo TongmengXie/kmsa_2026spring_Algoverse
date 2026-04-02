@@ -11,12 +11,13 @@ outputs/*/activations.npy
 outputs/*/activations_pca*.npy
 outputs/*/pca*_components.npy
 outputs/*/activations_checkpoint.npz
+outputs/*/labels.npy
 
 # HuggingFace download cache
 outputs/.cache/
 
 # Small outputs — tracked in git
-# outputs/{model_slug}/labels.npy                     ✅ 92K
+# outputs/{model_slug}/labels.npy                     → gitignored, on HuggingFace Hub
 # outputs/{model_slug}/figures/                        ✅ ~1MB
 # outputs/{model_slug}/pca*_explained_variance.csv    ✅
 # outputs/{model_slug}/{probe_type}/*.csv              ✅

@@ -339,7 +339,7 @@ Branch `refactor/simplified-notebook`. Notebook: `kaiyu_generation_and_probing_r
 **Refactoring branch (`refactor/simplified-notebook`) — COMPLETE:**
 - [x] Migrate data folder to `data/dataset/{model_slug}/` structure; delete `truth_set.csv`; update `.gitignore`
 - [x] Migrate outputs to `outputs/{model_slug}/{probe_type}/` structure; update `.gitignore`
-- [x] Create `utils/settings.py` + `settings_template.py`
+- [x] Create `utils/settings.py` + `settings_template.py`; add all judge model names, judge paths, and `PCA_K_VALUES`
 - [x] Fix `train_cascaded_probe` (LR) routing bug — both LR and MLP now use s1_pred routing consistently
 - [x] Add `C` parameter to `train_linear_probe` and `train_cascaded_probe` (was hardcoded C=1.0)
 - [x] Reorder `utils/probe.py` — each (train_*, probe_all_layers_*) pair now adjacent
@@ -347,14 +347,29 @@ Branch `refactor/simplified-notebook`. Notebook: `kaiyu_generation_and_probing_r
 - [x] Add high-level run functions to `utils/knowledge_check.py`
 - [x] Add high-level run functions to `utils/generation.py` (including `max_new_tokens`, `do_sample` params)
 - [x] Add high-level run functions to `utils/judge.py` (full batch polling loops)
-- [x] Add `filter_factual`, `build_probe_dataset`, `run_pca_reduction` to `utils/analysis.py`
+- [x] Add `filter_factual`, `build_probe_dataset`, `run_pca_reduction` (with HF Hub download) to `utils/analysis.py`
 - [x] Create `utils/plotting.py` — `plot_macro_f1`, `plot_perclass_f1`, `plot_auroc`, `plot_top_confusion_matrices`; save to file only, reconstruct CM from CSV columns
 - [x] Rewrite all notebook cells (Parts 1–6) using new utils; all cells are single function calls
 - [x] `results_*` variable issue resolved — all `probe_all_layers_*` return DataFrames; CSV loaded on skip
+- [x] `labels.npy` gitignored; HF Hub download priority added to `run_extract_activations` and `run_pca_reduction`
+- [x] Notebook Part 7: summary comparison tables (macro F1, per-class F1 ×3, binary AUROC) + figures saved to `outputs/{model_slug}/summary/`
+
+**Pending:**
+- [ ] Run all probe cells end-to-end on refactored notebook to verify outputs match original
+- [ ] Discuss with team: how to proxy-compare binary AUROC vs 3-way probes for Goldowsky baseline comparison
 
 ---
 
 ## Session Notes
+
+### 2026-04-02 — Bug fixes and Part 7 summary
+
+- `settings_template.py` + `settings.py`: added 13 missing variables — `JUDGE_CLAUDE_HAIKU_MODEL`, `JUDGE_GPT4O_MINI_MODEL`, `PCA_K_VALUES`, and 10 per-judge file paths (`JUDGE_*_TQA_PATH/STATE`, `JUDGE_*_MMLU_PATH/STATE`, `JUDGE_*_BATCH_DIR` for both claude_haiku and gpt4o_mini)
+- `utils/activation.py`: wrapped `enable_progress_bars` import in try/except — older `huggingface_hub` versions don't have it; was causing HF download to silently fall through to full re-extraction
+- `utils/analysis.py`: `run_pca_reduction` now accepts `hf_repo`/`hf_token` params; same 3-priority pattern as `run_extract_activations` (local → HF Hub → recompute); `activations_pca64.npy` and `pca64_components.npy` both on HF Hub
+- Notebook cell for `run_pca_reduction`: added `HF_ACTIVATIONS_REPO, HF_TOKEN` args
+- `.gitignore`: added `outputs/*/labels.npy` (was tracked in git; moved to HF Hub alongside activations)
+- Notebook Part 7 added: two cells — load all probe CSVs, build 5 comparison tables (macro F1, per-class F1 ×3, binary AUROC) + 5 figures saved to `outputs/{model_slug}/summary/`
 
 ### 2026-04-01 (session 3) — Refactoring complete
 

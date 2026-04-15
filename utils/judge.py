@@ -6,6 +6,27 @@ from pathlib import Path
 
 import pandas as pd
 
+
+def _get_api_key(env_var: str) -> str:
+    """Get API key from environment variable, falling back to settings.py."""
+    key = os.environ.get(env_var)
+    if key:
+        return key
+    try:
+        try:
+            from utils import settings as _s
+        except ImportError:
+            from . import settings as _s  # type: ignore[no-redef]
+        key = getattr(_s, env_var, None)
+    except ImportError:
+        pass
+    if not key:
+        raise KeyError(
+            f"API key '{env_var}' not found. "
+            f"Set the environment variable or fill it in utils/settings.py."
+        )
+    return key
+
 JUDGE_PROMPT = """\
 Question: {question}
 Correct answer: {correct_answer}
@@ -37,6 +58,10 @@ def parse_batch_results_anthropic(batch_results, source_df) -> "pd.DataFrame":
         row_index = int(parts[0])
         config = parts[1]
         v = parts[3]
+
+        if result.result.type != "succeeded":
+            print(f"[warn] Skipping {custom_id}: result type={result.result.type}")
+            continue
 
         text = result.result.message.content[0].text.strip()
         lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -126,7 +151,7 @@ def judge_once(
 
     if provider == "anthropic":
         import anthropic
-        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        client = anthropic.Anthropic(api_key=_get_api_key("ANTHROPIC_API_KEY"))
         message = client.messages.create(
             model=model,
             max_tokens=256,
@@ -136,13 +161,13 @@ def judge_once(
 
     elif provider == "google":
         import google.generativeai as genai
-        genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
+        genai.configure(api_key=os.environ.get("GOOGLE_API_KEY", ""))
         result = genai.GenerativeModel(model).generate_content(prompt)
         text = result.text.strip()
 
     elif provider == "openai":
         from openai import OpenAI
-        client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        client = OpenAI(api_key=_get_api_key("OPENAI_API_KEY"))
         result = client.chat.completions.create(
             model=model,
             max_tokens=256,
@@ -262,12 +287,14 @@ def run_judge_anthropic(
     state_path: Path,
     batch_dir: Path,
     poll_interval: int = 180,
+    max_retries: int = 3,
 ):
     """
     Submit resp_df to Anthropic Batch API, poll until complete, parse and save results.
 
     Skips entirely if output_path already exists.
     Resumes from state_path if batch was already submitted.
+    Automatically retries errored requests up to max_retries times.
 
     Parameters
     ----------
@@ -276,6 +303,7 @@ def run_judge_anthropic(
     state_path    : JSON file tracking batch_id and status (persists across kernel restarts)
     batch_dir     : directory to save the requests JSONL for reference
     poll_interval : seconds between status checks
+    max_retries   : max number of retry rounds for errored requests (default 3)
 
     Returns
     -------
@@ -294,7 +322,7 @@ def run_judge_anthropic(
         print(f"[skip] Already complete: {output_path.name}")
         return pd.read_csv(output_path)
 
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    client = anthropic.Anthropic(api_key=_get_api_key("ANTHROPIC_API_KEY"))
 
     # Step 2: Save requests JSONL for reference
     jsonl_path = batch_dir / f"{output_path.stem}_requests.jsonl"
@@ -337,10 +365,50 @@ def run_judge_anthropic(
         print(f"Waiting {poll_interval}s...")
         time.sleep(poll_interval)
 
-    # Step 5: Download, parse, save
+    # Step 5: Download results, retry errored requests
     resp_df = resp_df.reset_index(drop=True)
-    results  = list(client.messages.batches.results(batch_id))
-    judge_df = parse_batch_results_anthropic(results, resp_df)
+    results = list(client.messages.batches.results(batch_id))
+
+    succeeded = [r for r in results if r.result.type == "succeeded"]
+    errored_ids = {r.custom_id for r in results if r.result.type != "succeeded"}
+
+    if errored_ids:
+        # Load original JSONL to rebuild requests for errored custom_ids
+        jsonl_path = batch_dir / f"{output_path.stem}_requests.jsonl"
+        with open(jsonl_path) as f:
+            all_requests = {json.loads(line)["custom_id"]: json.loads(line) for line in f}
+
+        retry_num = 0
+        while errored_ids and retry_num < max_retries:
+            retry_num += 1
+            print(f"Retrying {len(errored_ids)} errored requests (attempt {retry_num}/{max_retries})...")
+            retry_requests = [all_requests[cid] for cid in errored_ids if cid in all_requests]
+            retry_batch = client.messages.batches.create(
+                requests=[
+                    {"custom_id": r["custom_id"], "params": r["params"]}
+                    for r in retry_requests
+                ]
+            )
+            while True:
+                retry_batch = client.messages.batches.retrieve(retry_batch.id)
+                counts = retry_batch.request_counts
+                print(
+                    f"  [{retry_batch.id}] {retry_batch.processing_status} | "
+                    f"succeeded={counts.succeeded}  errored={counts.errored}"
+                )
+                if retry_batch.processing_status == "ended":
+                    break
+                time.sleep(poll_interval)
+
+            retry_results = list(client.messages.batches.results(retry_batch.id))
+            succeeded.extend(r for r in retry_results if r.result.type == "succeeded")
+            errored_ids = {r.custom_id for r in retry_results if r.result.type != "succeeded"}
+
+        if errored_ids:
+            print(f"[warn] {len(errored_ids)} requests still errored after {max_retries} retries — skipping")
+
+    # Step 6: Parse combined results and save
+    judge_df = parse_batch_results_anthropic(succeeded, resp_df)
     judge_df.to_csv(output_path, index=False)
     state_path.write_text(json.dumps({"batch_id": batch_id, "status": "completed"}))
     print(f"Saved {len(judge_df)} rows → {output_path.name}")
@@ -391,7 +459,7 @@ def run_judge_openai(
         print(f"[skip] Already complete: {output_path.name}")
         return pd.read_csv(output_path)
 
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    client = OpenAI(api_key=_get_api_key("OPENAI_API_KEY"))
 
     # Step 2: Build JSONL parts (or load from state)
     if state_path.exists():

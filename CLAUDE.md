@@ -52,7 +52,8 @@ project/
 │   ├── judge.py                           ← done (6 functions)
 │   ├── activation.py                      ← done (accepts system_prompt directly)
 │   ├── probe.py                           ← done (train_linear_probe w/ train F1, train_binary_probe, probe_all_layers_binary, train_cascaded_probe, probe_all_layers, probe_all_layers_cascaded); MLP variants planned
-│   └── analysis.py                        ← done (reduce_activations_pca, save_results_csv, select_pca_k)
+│   ├── analysis.py                        ← done (reduce_activations_pca, save_results_csv, select_pca_k)
+│   └── prompt_registry.py                 ← done (NEUTRAL_PROMPTS: 6 variants; DECEPTION_PROMPTS: 7 variants for semantic variability experiments)
 ├── data/dataset/
 │   ├── deception_dataset.csv              ← fixed; social scenarios, 400 rows (200 honest + 200 deceptive)
 │   │                                         cols: pair_id, label, prompt, response, scenario, question
@@ -301,7 +302,7 @@ To be done in a dedicated branch (`refactor/simplified-notebook`). The goal is a
 3. **One cell at a time** in the notebook.
 4. **No large rewrites** unless explicitly asked.
 5. **Ask when uncertain** rather than assuming.
-6. **Reply in Chinese only.** Never mix in Korean or Japanese under any circumstances.
+6. **Reply in English only.**
 
 ---
 
@@ -439,6 +440,12 @@ To be done in a dedicated branch (`refactor/simplified-notebook`). The goal is a
 **Pending team discussion:**
 - Whether to report binary probe with C=1.0 only (internal comparison) or also C=0.1 (Goldowsky comparison) — two curves nearly identical
 - Cascaded LR confusion matrix is inaccurate — inform team before reviewing those plots
+
+### 2026-04-21
+- Created `utils/prompt_registry.py`: centralises all system prompt variants for semantic variability experiments
+  - `NEUTRAL_PROMPTS`: original + 5 variants (6 total) — minor paraphrases of the truthful/factual instruction
+  - `DECEPTION_PROMPTS`: original (debate) + 6 variants (7 total) — lawyer, actor, propagandist, salesperson, contrarian, teacher framings
+- Purpose: test whether the trained probe generalises across prompt phrasings or is sensitive to specific wording
 
 ---
 

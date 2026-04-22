@@ -1,5 +1,7 @@
 import numpy as np
 import torch
+from pathlib import Path
+from tqdm.auto import tqdm
 
 
 def extract_activations(
@@ -40,3 +42,109 @@ def extract_activations(
     # Take the last token position from each layer → (n_layers, hidden_dim)
     activations = torch.stack([hs[0, -1, :] for hs in hidden_states])
     return activations.cpu().float().numpy()
+
+
+LABEL_MAP = {"truth": 0, "honest_mistake": 1, "deception": 2}
+
+
+def run_extract_activations(
+    probe_dataset,
+    model,
+    tokenizer,
+    device: str,
+    activations_path: Path,
+    labels_path: Path,
+    checkpoint_path: Path,
+    hf_repo: str,
+    hf_token: str,
+    checkpoint_every: int = 50,
+):
+    """
+    Load or extract activations for all rows in probe_dataset.
+
+    Priority:
+    1. Load from local activations_path / labels_path if both exist.
+    2. Download from HuggingFace Hub (hf_repo) if local files missing.
+    3. Extract from scratch using the model, with checkpoint/resume support.
+
+    Returns
+    -------
+    activations_arr : np.ndarray (n_samples, n_layers, hidden_dim)
+    labels_arr      : np.ndarray (n_samples,) — integer encoded
+    """
+    activations_path = Path(activations_path)
+    labels_path      = Path(labels_path)
+    checkpoint_path  = Path(checkpoint_path)
+
+    def _load_with_progress(path, desc):
+        size = path.stat().st_size
+        with tqdm.wrapattr(open(path, "rb"), "read", total=size, desc=desc) as f:
+            return np.load(f)
+
+    # ── 1. Local ──────────────────────────────────────────────────────────
+    if activations_path.exists() and labels_path.exists():
+        activations_arr = _load_with_progress(activations_path, "Loading activations")
+        labels_arr      = _load_with_progress(labels_path,      "Loading labels     ")
+        print(f"[local] activations {activations_arr.shape}, labels {labels_arr.shape}")
+        return activations_arr, labels_arr
+
+    # ── 2. HuggingFace Hub ────────────────────────────────────────────────
+    try:
+        from huggingface_hub import hf_hub_download
+        try:
+            from huggingface_hub import enable_progress_bars
+            enable_progress_bars()
+        except ImportError:
+            pass
+        print(f"Local files not found. Downloading from {hf_repo} ...")
+        for filename in ["activations.npy", "labels.npy"]:
+            hf_hub_download(
+                repo_id=hf_repo, filename=filename,
+                repo_type="dataset", token=hf_token,
+                local_dir=str(activations_path.parent),
+            )
+        activations_arr = _load_with_progress(activations_path, "Loading activations")
+        labels_arr      = _load_with_progress(labels_path,      "Loading labels     ")
+        print(f"[HF] activations {activations_arr.shape}, labels {labels_arr.shape}")
+        return activations_arr, labels_arr
+
+    except Exception as e:
+        print(f"Download failed ({type(e).__name__}: {e}). Running extraction ...")
+
+    # ── 3. Extract ────────────────────────────────────────────────────────
+    if checkpoint_path.exists():
+        ckpt = np.load(checkpoint_path)
+        all_activations = list(ckpt["activations"])
+        all_labels      = list(ckpt["labels"])
+        start_idx = len(all_activations)
+        print(f"Resuming from checkpoint: {start_idx}/{len(probe_dataset)} done")
+    else:
+        all_activations, all_labels, start_idx = [], [], 0
+        print(f"Starting fresh: {len(probe_dataset)} samples")
+
+    for i, row in enumerate(tqdm(
+        probe_dataset.iloc[start_idx:].itertuples(),
+        total=len(probe_dataset) - start_idx,
+        desc="Extracting activations",
+    )):
+        all_activations.append(extract_activations(
+            question=row.question,
+            response=row.response,
+            system_prompt=row.system_prompt,
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+        ))
+        all_labels.append(LABEL_MAP[row.label])
+
+        if (start_idx + i + 1) % checkpoint_every == 0:
+            np.savez(checkpoint_path,
+                     activations=np.array(all_activations),
+                     labels=np.array(all_labels))
+
+    activations_arr = np.array(all_activations)
+    labels_arr      = np.array(all_labels)
+    np.save(activations_path, activations_arr)
+    np.save(labels_path,      labels_arr)
+    print(f"Extracted and saved: activations {activations_arr.shape}")
+    return activations_arr, labels_arr

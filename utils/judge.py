@@ -1,5 +1,31 @@
+import json
 import os
 import re
+import time
+from pathlib import Path
+
+import pandas as pd
+
+
+def _get_api_key(env_var: str) -> str:
+    """Get API key from environment variable, falling back to settings.py."""
+    key = os.environ.get(env_var)
+    if key:
+        return key
+    try:
+        try:
+            from utils import settings as _s
+        except ImportError:
+            from . import settings as _s  # type: ignore[no-redef]
+        key = getattr(_s, env_var, None)
+    except ImportError:
+        pass
+    if not key:
+        raise KeyError(
+            f"API key '{env_var}' not found. "
+            f"Set the environment variable or fill it in utils/settings.py."
+        )
+    return key
 
 JUDGE_PROMPT = """\
 Question: {question}
@@ -32,6 +58,10 @@ def parse_batch_results_anthropic(batch_results, source_df) -> "pd.DataFrame":
         row_index = int(parts[0])
         config = parts[1]
         v = parts[3]
+
+        if result.result.type != "succeeded":
+            print(f"[warn] Skipping {custom_id}: result type={result.result.type}")
+            continue
 
         text = result.result.message.content[0].text.strip()
         lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -121,7 +151,7 @@ def judge_once(
 
     if provider == "anthropic":
         import anthropic
-        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        client = anthropic.Anthropic(api_key=_get_api_key("ANTHROPIC_API_KEY"))
         message = client.messages.create(
             model=model,
             max_tokens=256,
@@ -131,13 +161,13 @@ def judge_once(
 
     elif provider == "google":
         import google.generativeai as genai
-        genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
+        genai.configure(api_key=os.environ.get("GOOGLE_API_KEY", ""))
         result = genai.GenerativeModel(model).generate_content(prompt)
         text = result.text.strip()
 
     elif provider == "openai":
         from openai import OpenAI
-        client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        client = OpenAI(api_key=_get_api_key("OPENAI_API_KEY"))
         result = client.chat.completions.create(
             model=model,
             max_tokens=256,
@@ -247,3 +277,368 @@ def judge_sample(
         for i, (reasoning, vote) in enumerate(results, start=1)
         for key, val in [(f"reasoning_{i}", reasoning), (f"vote_{i}", vote)]
     }
+
+
+def run_judge_anthropic(
+    resp_df,
+    model: str,
+    n_votes: int,
+    output_path: Path,
+    state_path: Path,
+    batch_dir: Path,
+    poll_interval: int = 180,
+    max_retries: int = 3,
+):
+    """
+    Submit resp_df to Anthropic Batch API, poll until complete, parse and save results.
+
+    Skips entirely if output_path already exists.
+    Resumes from state_path if batch was already submitted.
+    Automatically retries errored requests up to max_retries times.
+
+    Parameters
+    ----------
+    resp_df       : DataFrame with columns question, correct_answer, config, response
+    output_path   : where to save the parsed judge CSV
+    state_path    : JSON file tracking batch_id and status (persists across kernel restarts)
+    batch_dir     : directory to save the requests JSONL for reference
+    poll_interval : seconds between status checks
+    max_retries   : max number of retry rounds for errored requests (default 3)
+
+    Returns
+    -------
+    judge_df : pd.DataFrame with columns question, config, reasoning_1, vote_1, ...
+    """
+    import pandas as pd
+    import anthropic
+
+    output_path = Path(output_path)
+    state_path  = Path(state_path)
+    batch_dir   = Path(batch_dir)
+    batch_dir.mkdir(parents=True, exist_ok=True)
+
+    # Step 1: Skip if already done
+    if output_path.exists():
+        print(f"[skip] Already complete: {output_path.name}")
+        return pd.read_csv(output_path)
+
+    client = anthropic.Anthropic(api_key=_get_api_key("ANTHROPIC_API_KEY"))
+
+    # Step 2: Save requests JSONL for reference
+    jsonl_path = batch_dir / f"{output_path.stem}_requests.jsonl"
+    if not jsonl_path.exists():
+        resp_df = resp_df.reset_index(drop=True)
+        requests = build_batch_requests_anthropic(resp_df, model, n_votes)
+        with open(jsonl_path, "w") as f:
+            for req in requests:
+                f.write(json.dumps(req) + "\n")
+        print(f"Saved {len(requests)} requests → {jsonl_path.name}")
+
+    # Step 3: Submit batch if not already submitted
+    if state_path.exists():
+        state = json.loads(state_path.read_text())
+        batch_id = state["batch_id"]
+        print(f"Resuming batch: {batch_id}")
+    else:
+        resp_df = resp_df.reset_index(drop=True)
+        requests = build_batch_requests_anthropic(resp_df, model, n_votes)
+        batch = client.messages.batches.create(
+            requests=[
+                {"custom_id": req["custom_id"], "params": req["params"]}
+                for req in requests
+            ]
+        )
+        batch_id = batch.id
+        state_path.write_text(json.dumps({"batch_id": batch_id, "status": "in_progress"}))
+        print(f"Submitted batch: {batch_id}")
+
+    # Step 4: Poll until complete
+    while True:
+        batch = client.messages.batches.retrieve(batch_id)
+        counts = batch.request_counts
+        print(
+            f"[{batch_id}] {batch.processing_status} | "
+            f"succeeded={counts.succeeded}  processing={counts.processing}  errored={counts.errored}"
+        )
+        if batch.processing_status == "ended":
+            break
+        print(f"Waiting {poll_interval}s...")
+        time.sleep(poll_interval)
+
+    # Step 5: Download results, retry errored requests
+    resp_df = resp_df.reset_index(drop=True)
+    results = list(client.messages.batches.results(batch_id))
+
+    succeeded = [r for r in results if r.result.type == "succeeded"]
+    errored_ids = {r.custom_id for r in results if r.result.type != "succeeded"}
+
+    if errored_ids:
+        # Load original JSONL to rebuild requests for errored custom_ids
+        jsonl_path = batch_dir / f"{output_path.stem}_requests.jsonl"
+        with open(jsonl_path) as f:
+            all_requests = {json.loads(line)["custom_id"]: json.loads(line) for line in f}
+
+        retry_num = 0
+        while errored_ids and retry_num < max_retries:
+            retry_num += 1
+            print(f"Retrying {len(errored_ids)} errored requests (attempt {retry_num}/{max_retries})...")
+            retry_requests = [all_requests[cid] for cid in errored_ids if cid in all_requests]
+            retry_batch = client.messages.batches.create(
+                requests=[
+                    {"custom_id": r["custom_id"], "params": r["params"]}
+                    for r in retry_requests
+                ]
+            )
+            while True:
+                retry_batch = client.messages.batches.retrieve(retry_batch.id)
+                counts = retry_batch.request_counts
+                print(
+                    f"  [{retry_batch.id}] {retry_batch.processing_status} | "
+                    f"succeeded={counts.succeeded}  errored={counts.errored}"
+                )
+                if retry_batch.processing_status == "ended":
+                    break
+                time.sleep(poll_interval)
+
+            retry_results = list(client.messages.batches.results(retry_batch.id))
+            succeeded.extend(r for r in retry_results if r.result.type == "succeeded")
+            errored_ids = {r.custom_id for r in retry_results if r.result.type != "succeeded"}
+
+        if errored_ids:
+            print(f"[warn] {len(errored_ids)} requests still errored after {max_retries} retries — skipping")
+
+    # Step 6: Parse combined results and save
+    judge_df = parse_batch_results_anthropic(succeeded, resp_df)
+    judge_df.to_csv(output_path, index=False)
+    state_path.write_text(json.dumps({"batch_id": batch_id, "status": "completed"}))
+    print(f"Saved {len(judge_df)} rows → {output_path.name}")
+    return judge_df
+
+
+def run_judge_openai(
+    resp_df,
+    model: str,
+    n_votes: int,
+    output_path: Path,
+    state_path: Path,
+    batch_dir: Path,
+    max_tokens_per_batch: int = 1_800_000,
+    poll_interval: int = 180,
+):
+    """
+    Split resp_df by token count, submit to OpenAI Batch API sequentially,
+    poll and auto-advance until all parts complete, parse and save results.
+
+    Skips entirely if output_path already exists.
+    Resumes from state_path if batches were already submitted.
+
+    Parameters
+    ----------
+    resp_df              : DataFrame with columns question, correct_answer, config, response
+    output_path          : where to save the parsed judge CSV
+    state_path           : JSON file tracking per-part batch state
+    batch_dir            : directory to save JSONL parts and downloaded results
+    max_tokens_per_batch : token budget per OpenAI batch (default 1.8M)
+    poll_interval        : seconds between status checks
+
+    Returns
+    -------
+    judge_df : pd.DataFrame with columns question, config, reasoning_1, vote_1, ...
+    """
+    import pandas as pd
+    import tiktoken
+    from openai import OpenAI
+
+    output_path = Path(output_path)
+    state_path  = Path(state_path)
+    batch_dir   = Path(batch_dir)
+    batch_dir.mkdir(parents=True, exist_ok=True)
+
+    # Step 1: Skip if already done
+    if output_path.exists():
+        print(f"[skip] Already complete: {output_path.name}")
+        return pd.read_csv(output_path)
+
+    client = OpenAI(api_key=_get_api_key("OPENAI_API_KEY"))
+
+    # Step 2: Build JSONL parts (or load from state)
+    if state_path.exists():
+        state = json.loads(state_path.read_text())
+        parts = state["parts"]
+        completed = sum(1 for p in parts if p["status"] == "completed")
+        print(f"Resuming: {len(parts)} parts, {completed} completed")
+    else:
+        resp_df = resp_df.reset_index(drop=True)
+        enc = tiktoken.get_encoding("cl100k_base")
+        all_requests = build_batch_requests_openai(resp_df, model, n_votes)
+
+        # Split by token count
+        parts = []
+        current_part, current_tokens = [], 0
+        for req in all_requests:
+            req_tokens = len(enc.encode(json.dumps(req)))
+            if current_part and current_tokens + req_tokens > max_tokens_per_batch:
+                part_idx  = len(parts)
+                jsonl_path = batch_dir / f"{output_path.stem}_requests_part{part_idx}.jsonl"
+                with open(jsonl_path, "w") as f:
+                    for r in current_part:
+                        f.write(json.dumps(r) + "\n")
+                parts.append({"part": part_idx, "jsonl_path": str(jsonl_path),
+                               "batch_id": None, "status": "pending", "result_path": None})
+                current_part, current_tokens = [], 0
+            current_part.append(req)
+            current_tokens += req_tokens
+
+        if current_part:
+            part_idx   = len(parts)
+            jsonl_path = batch_dir / f"{output_path.stem}_requests_part{part_idx}.jsonl"
+            with open(jsonl_path, "w") as f:
+                for r in current_part:
+                    f.write(json.dumps(r) + "\n")
+            parts.append({"part": part_idx, "jsonl_path": str(jsonl_path),
+                           "batch_id": None, "status": "pending", "result_path": None})
+
+        print(f"Split into {len(parts)} parts")
+
+        # Submit first part immediately
+        p = parts[0]
+        with open(p["jsonl_path"], "rb") as f:
+            file_obj = client.files.create(file=f, purpose="batch")
+        batch = client.batches.create(
+            input_file_id=file_obj.id,
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+        )
+        p["batch_id"] = batch.id
+        p["status"]   = "in_progress"
+        state_path.write_text(json.dumps({"parts": parts}))
+        print(f"Submitted part 0: {batch.id}")
+
+    # Step 3: Poll loop — auto-download and auto-advance
+    while True:
+        in_progress = next((p for p in parts if p["status"] == "in_progress"), None)
+
+        if in_progress is None:
+            # All in_progress done — submit next pending or exit
+            pending = [p for p in parts if p["status"] == "pending"]
+            if not pending:
+                break  # all parts complete
+            p = pending[0]
+            with open(p["jsonl_path"], "rb") as f:
+                file_obj = client.files.create(file=f, purpose="batch")
+            batch = client.batches.create(
+                input_file_id=file_obj.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+            )
+            p["batch_id"] = batch.id
+            p["status"]   = "in_progress"
+            state_path.write_text(json.dumps({"parts": parts}))
+            print(f"Submitted part {p['part']}: {batch.id}")
+            in_progress = p
+
+        batch  = client.batches.retrieve(in_progress["batch_id"])
+        status = batch.status
+        counts = batch.request_counts
+        print(
+            f"[Part {in_progress['part']} | {in_progress['batch_id']}] {status} | "
+            f"completed={counts.completed}  total={counts.total}"
+        )
+
+        if status == "completed":
+            result_path = batch_dir / f"{output_path.stem}_results_part{in_progress['part']}.jsonl"
+            content = client.files.content(batch.output_file_id)
+            result_path.write_bytes(content.content)
+            in_progress["status"]      = "completed"
+            in_progress["result_path"] = str(result_path)
+            state_path.write_text(json.dumps({"parts": parts}))
+            print(f"Downloaded part {in_progress['part']} → {result_path.name}")
+            continue  # immediately check/submit next part, no sleep
+        elif status in ("failed", "cancelled", "expired"):
+            raise RuntimeError(f"Batch {in_progress['batch_id']} ended with status: {status}")
+
+        print(f"Waiting {poll_interval}s...")
+        time.sleep(poll_interval)
+
+    # Step 4: Concatenate all results, parse, save
+    resp_df  = resp_df.reset_index(drop=True)
+    all_lines = []
+    for p in sorted(parts, key=lambda x: x["part"]):
+        with open(p["result_path"]) as f:
+            all_lines.extend(f.readlines())
+
+    judge_df = parse_batch_results_openai(all_lines, resp_df)
+    judge_df.to_csv(output_path, index=False)
+    print(f"Saved {len(judge_df)} rows → {output_path.name}")
+    return judge_df
+
+
+def aggregate_judge_votes(*judge_paths, vote_cols=None) -> pd.DataFrame:
+    """
+    Load one or more judge CSVs, count correct votes per (question, config).
+    Missing files are skipped with a warning; denominator adjusts accordingly.
+
+    Returns
+    -------
+    pd.DataFrame with columns: question, config, votes_correct, votes_incorrect, correct_ratio
+    """
+    if vote_cols is None:
+        vote_cols = ["vote_1", "vote_2", "vote_3"]
+
+    parts = []
+    for path in judge_paths:
+        path = Path(path)
+        if not path.exists():
+            print(f"  WARNING: {path.name} not found — skipping")
+            continue
+        df = pd.read_csv(path)
+        df["votes_correct"] = df[vote_cols].apply(
+            lambda row: (row.str.lower().str.strip() == "correct").sum(), axis=1
+        )
+        parts.append(df[["question", "config", "votes_correct"]])
+
+    if not parts:
+        raise FileNotFoundError("No judge files found.")
+
+    merged = parts[0].copy()
+    for part in parts[1:]:
+        merged = merged.merge(part, on=["question", "config"], suffixes=("_a", "_b"))
+        merged["votes_correct"] = merged["votes_correct_a"] + merged["votes_correct_b"]
+        merged = merged[["question", "config", "votes_correct"]]
+
+    total_votes = len(parts) * len(vote_cols)
+    merged["votes_incorrect"] = total_votes - merged["votes_correct"]
+    merged["correct_ratio"]   = merged["votes_correct"] / total_votes
+    return merged.reset_index(drop=True)
+
+
+def build_full(votes_df, responses_df) -> pd.DataFrame:
+    """Merge vote summary back with responses to add response/system_prompt/correct_answer."""
+    return votes_df.merge(
+        responses_df[["question", "config", "response", "system_prompt", "correct_answer"]],
+        on=["question", "config"],
+        how="inner",
+    ).reset_index(drop=True)
+
+
+def print_threshold_summary(full_df, dataset_name: str):
+    """Print votes_correct distribution and row counts at each threshold."""
+    pivot = (
+        full_df.groupby(["config", "votes_correct"])
+        .size()
+        .unstack(fill_value=0)
+        .T
+    )
+    print(f"\n=== {dataset_name} — votes_correct distribution ===")
+    print(pivot.to_string())
+
+    print(f"\n  Config A (truth)       — useful range: votes_correct ≥ 4")
+    a = full_df[full_df["config"] == "A"]["votes_correct"]
+    for thr in [6, 5, 4]:
+        print(f"    >= {thr}/6 correct : {(a >= thr).sum():>5} rows")
+
+    for cfg, label in [("B", "honest_mistake"), ("C", "deception")]:
+        print(f"\n  Config {cfg} ({label}) — useful range: votes_correct ≤ 2")
+        v = full_df[full_df["config"] == cfg]["votes_correct"]
+        for thr in [0, 1, 2]:
+            print(f"    <= {thr}/6 correct : {(v <= thr).sum():>5} rows")

@@ -1,4 +1,7 @@
+import pickle
 import numpy as np
+import pandas as pd
+from pathlib import Path
 from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from sklearn.model_selection import StratifiedKFold
@@ -13,6 +16,7 @@ def train_linear_probe(
     n_splits: int = 5,
     max_iter: int = 200,
     random_state: int = 42,
+    C: float = 1.0,
 ) -> dict:
     """
     Train a logistic regression probe on activations from a single layer
@@ -47,7 +51,7 @@ def train_linear_probe(
         X_train = scaler.fit_transform(X_train)
         X_val   = scaler.transform(X_val)
 
-        clf = LogisticRegression(solver="saga", max_iter=max_iter, random_state=random_state, C=1.0)
+        clf = LogisticRegression(solver="saga", max_iter=max_iter, random_state=random_state, C=C)
         clf.fit(X_train, y_train)
 
         y_pred       = clf.predict(X_val)
@@ -81,6 +85,89 @@ def train_linear_probe(
         "confusion_matrix_norm": cm_norm,
         "classes":               classes,
     }
+
+
+def _save_probe_csv(results: list[dict], path: Path) -> pd.DataFrame:
+    """Flatten per-layer probe result dicts to a DataFrame and save as CSV."""
+    rows = []
+    for r in results:
+        row = {"layer": r["layer"], "f1_macro": r["f1_macro"]}
+        for cls, val in r["f1_per_class"].items():
+            row[f"f1_{cls}"] = val
+        classes = r["classes"]
+        cm      = r["confusion_matrix"]
+        cm_norm = r["confusion_matrix_norm"]
+        for i, tc in enumerate(classes):
+            for j, pc in enumerate(classes):
+                row[f"cm_{tc}_{pc}"]      = int(cm[i, j])
+                row[f"cm_norm_{tc}_{pc}"] = float(cm_norm[i, j])
+        for key in ("auroc", "n_samples", "stage2_auroc"):
+            if key in r:
+                row[key] = r[key]
+        for prefix in ("stage1_f1", "stage2_f1"):
+            if prefix in r:
+                for k, v in r[prefix].items():
+                    row[f"{prefix}_{k}"] = v
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+    return df
+
+
+def probe_all_layers(
+    activations: np.ndarray,
+    labels: np.ndarray,
+    output_path: Path = None,
+    checkpoint_path: Path = None,
+    **kwargs,
+) -> pd.DataFrame:
+    """
+    Run train_linear_probe for every layer with skip/checkpoint/save support.
+
+    Parameters
+    ----------
+    activations     : (n_samples, n_layers, hidden_dim)
+    output_path     : if provided, skip if CSV exists; save results on completion
+    checkpoint_path : if provided, resume from pickle checkpoint
+
+    Returns
+    -------
+    pd.DataFrame — one row per layer
+    """
+    if output_path is not None:
+        output_path = Path(output_path)
+        if output_path.exists():
+            df = pd.read_csv(output_path)
+            print(f"[skip] {output_path.name} already exists ({len(df)} rows)")
+            return df
+
+    n_layers = activations.shape[1]
+
+    if checkpoint_path is not None and Path(checkpoint_path).exists():
+        with open(checkpoint_path, "rb") as f:
+            results = pickle.load(f)
+        done = {r["layer"] for r in results}
+        print(f"[checkpoint] Resuming from layer {max(done)+1} ({len(done)}/{n_layers} done)")
+    else:
+        results, done = [], set()
+
+    for layer_idx in tqdm(range(n_layers), desc="3-way LR probe (layers)"):
+        if layer_idx in done:
+            continue
+        result = train_linear_probe(activations[:, layer_idx, :], labels, **kwargs)
+        result["layer"] = layer_idx
+        results.append(result)
+        results.sort(key=lambda r: r["layer"])
+        if checkpoint_path is not None:
+            with open(checkpoint_path, "wb") as f:
+                pickle.dump(results, f)
+
+    if output_path is not None:
+        df = _save_probe_csv(results, output_path)
+        print(f"Saved {output_path.name} ({len(df)} rows)")
+        return df
+    return results
 
 
 def train_binary_probe(
@@ -168,26 +255,55 @@ def train_binary_probe(
 def probe_all_layers_binary(
     activations: np.ndarray,
     labels: np.ndarray,
+    output_path: Path = None,
+    checkpoint_path: Path = None,
     **kwargs,
-) -> list[dict]:
+) -> pd.DataFrame:
     """
-    Run train_binary_probe for every layer.
+    Run train_binary_probe for every layer with skip/checkpoint/save support.
 
     Parameters
     ----------
-    activations : (n_samples, n_layers, hidden_dim)
+    activations     : (n_samples, n_layers, hidden_dim)
+    output_path     : if provided, skip if CSV exists; save results on completion
+    checkpoint_path : if provided, resume from pickle checkpoint
 
     Returns
     -------
-    list of dicts, one per layer (length = n_layers)
+    pd.DataFrame — one row per layer
     """
+    if output_path is not None:
+        output_path = Path(output_path)
+        if output_path.exists():
+            df = pd.read_csv(output_path)
+            print(f"[skip] {output_path.name} already exists ({len(df)} rows)")
+            return df
+
     n_layers = activations.shape[1]
-    results  = []
+
+    if checkpoint_path is not None and Path(checkpoint_path).exists():
+        with open(checkpoint_path, "rb") as f:
+            results = pickle.load(f)
+        done = {r["layer"] for r in results}
+        print(f"[checkpoint] Resuming from layer {max(done)+1} ({len(done)}/{n_layers} done)")
+    else:
+        results, done = [], set()
+
     for layer_idx in tqdm(range(n_layers), desc="binary probe (layers)"):
-        layer_acts = activations[:, layer_idx, :]
-        result     = train_binary_probe(layer_acts, labels, **kwargs)
+        if layer_idx in done:
+            continue
+        result = train_binary_probe(activations[:, layer_idx, :], labels, **kwargs)
         result["layer"] = layer_idx
         results.append(result)
+        results.sort(key=lambda r: r["layer"])
+        if checkpoint_path is not None:
+            with open(checkpoint_path, "wb") as f:
+                pickle.dump(results, f)
+
+    if output_path is not None:
+        df = _save_probe_csv(results, output_path)
+        print(f"Saved {output_path.name} ({len(df)} rows)")
+        return df
     return results
 
 
@@ -197,6 +313,7 @@ def train_cascaded_probe(
     n_splits: int = 5,
     max_iter: int = 200,
     random_state: int = 42,
+    C: float = 1.0,
 ) -> dict:
     """
     Train a two-stage cascaded probe on activations from a single layer
@@ -245,7 +362,7 @@ def train_cascaded_probe(
         s1_train = np.where(y_train == "truth", "truth", "non_truth")
         s1_val   = np.where(y_val   == "truth", "truth", "non_truth")
 
-        clf1 = LogisticRegression(solver="saga", max_iter=max_iter, random_state=random_state, C=1.0)
+        clf1 = LogisticRegression(solver="saga", max_iter=max_iter, random_state=random_state, C=C)
         clf1.fit(X_train, s1_train)
         s1_pred = clf1.predict(X_val)
 
@@ -259,7 +376,7 @@ def train_cascaded_probe(
 
         s2_classes = ["deception", "honest_mistake"]
         if s2_mask_train.sum() >= 2 and len(set(y_train[s2_mask_train])) == 2:
-            clf2 = LogisticRegression(solver="saga", max_iter=max_iter, random_state=random_state, C=1.0)
+            clf2 = LogisticRegression(solver="saga", max_iter=max_iter, random_state=random_state, C=C)
             clf2.fit(X_train[s2_mask_train], y_train[s2_mask_train])
 
             # Stage 2 metrics: evaluate on TRUE non-truth val samples (oracle signal)
@@ -280,21 +397,20 @@ def train_cascaded_probe(
             )
             s2_fold_aurocs.append(auroc)
 
-            # ── Combine: stage 1 pred → if non_truth, apply clf2 to those samples
-            y_combined = np.array([""] * len(y_val), dtype=object)
+            # Real cascaded routing: use stage 1 prediction to route to stage 2
+            y_combined = np.empty(len(y_val), dtype=object)
             s1_truth_mask    = s1_pred == "truth"
-            s1_nontrue_mask  = ~s1_truth_mask
-            y_combined[s1_truth_mask]   = "truth"
-            y_combined[s1_nontrue_mask] = clf2.predict(X_val[s1_nontrue_mask])
+            s1_nontruth_mask = ~s1_truth_mask
+            y_combined[s1_truth_mask]    = "truth"
+            y_combined[s1_nontruth_mask] = clf2.predict(X_val[s1_nontruth_mask])
+            cm_accum += confusion_matrix(y_val, y_combined, labels=classes)
 
         else:
             s2_fold_f1s["deception"].append(float("nan"))
             s2_fold_f1s["honest_mistake"].append(float("nan"))
             s2_fold_aurocs.append(float("nan"))
-            # Fallback: use stage 1 only, label non_truth as honest_mistake
             y_combined = np.where(s1_pred == "truth", "truth", "honest_mistake")
-
-        cm_accum += confusion_matrix(y_val, y_combined, labels=classes)
+            cm_accum += confusion_matrix(y_val, y_combined, labels=classes)
 
     # ── Aggregate metrics ─────────────────────────────────────────────────
     row_sums = cm_accum.sum(axis=1, keepdims=True)
@@ -322,29 +438,58 @@ def train_cascaded_probe(
     }
 
 
-def probe_all_layers(
+def probe_all_layers_cascaded(
     activations: np.ndarray,
     labels: np.ndarray,
+    output_path: Path = None,
+    checkpoint_path: Path = None,
     **kwargs,
-) -> list[dict]:
+) -> pd.DataFrame:
     """
-    Run train_linear_probe for every layer.
+    Run train_cascaded_probe for every layer with skip/checkpoint/save support.
 
     Parameters
     ----------
-    activations : (n_samples, n_layers, hidden_dim)
+    activations     : (n_samples, n_layers, hidden_dim)
+    output_path     : if provided, skip if CSV exists; save results on completion
+    checkpoint_path : if provided, resume from pickle checkpoint
 
     Returns
     -------
-    list of dicts, one per layer (length = n_layers)
+    pd.DataFrame — one row per layer
     """
+    if output_path is not None:
+        output_path = Path(output_path)
+        if output_path.exists():
+            df = pd.read_csv(output_path)
+            print(f"[skip] {output_path.name} already exists ({len(df)} rows)")
+            return df
+
     n_layers = activations.shape[1]
-    results = []
-    for layer_idx in tqdm(range(n_layers), desc="3-way probe (layers)"):
-        layer_acts = activations[:, layer_idx, :]
-        result = train_linear_probe(layer_acts, labels, **kwargs)
+
+    if checkpoint_path is not None and Path(checkpoint_path).exists():
+        with open(checkpoint_path, "rb") as f:
+            results = pickle.load(f)
+        done = {r["layer"] for r in results}
+        print(f"[checkpoint] Resuming from layer {max(done)+1} ({len(done)}/{n_layers} done)")
+    else:
+        results, done = [], set()
+
+    for layer_idx in tqdm(range(n_layers), desc="cascaded LR probe (layers)"):
+        if layer_idx in done:
+            continue
+        result = train_cascaded_probe(activations[:, layer_idx, :], labels, **kwargs)
         result["layer"] = layer_idx
         results.append(result)
+        results.sort(key=lambda r: r["layer"])
+        if checkpoint_path is not None:
+            with open(checkpoint_path, "wb") as f:
+                pickle.dump(results, f)
+
+    if output_path is not None:
+        df = _save_probe_csv(results, output_path)
+        print(f"Saved {output_path.name} ({len(df)} rows)")
+        return df
     return results
 
 
@@ -428,26 +573,55 @@ def train_mlp_probe(
 def probe_all_layers_mlp(
     activations: np.ndarray,
     labels: np.ndarray,
+    output_path: Path = None,
+    checkpoint_path: Path = None,
     **kwargs,
-) -> list[dict]:
+) -> pd.DataFrame:
     """
-    Run train_mlp_probe for every layer.
+    Run train_mlp_probe for every layer with skip/checkpoint/save support.
 
     Parameters
     ----------
-    activations : (n_samples, n_layers, hidden_dim)
+    activations     : (n_samples, n_layers, hidden_dim)
+    output_path     : if provided, skip if CSV exists; save results on completion
+    checkpoint_path : if provided, resume from pickle checkpoint
 
     Returns
     -------
-    list of dicts, one per layer (length = n_layers)
+    pd.DataFrame — one row per layer
     """
+    if output_path is not None:
+        output_path = Path(output_path)
+        if output_path.exists():
+            df = pd.read_csv(output_path)
+            print(f"[skip] {output_path.name} already exists ({len(df)} rows)")
+            return df
+
     n_layers = activations.shape[1]
-    results  = []
+
+    if checkpoint_path is not None and Path(checkpoint_path).exists():
+        with open(checkpoint_path, "rb") as f:
+            results = pickle.load(f)
+        done = {r["layer"] for r in results}
+        print(f"[checkpoint] Resuming from layer {max(done)+1} ({len(done)}/{n_layers} done)")
+    else:
+        results, done = [], set()
+
     for layer_idx in tqdm(range(n_layers), desc="3-way MLP probe (layers)"):
-        layer_acts = activations[:, layer_idx, :]
-        result     = train_mlp_probe(layer_acts, labels, **kwargs)
+        if layer_idx in done:
+            continue
+        result = train_mlp_probe(activations[:, layer_idx, :], labels, **kwargs)
         result["layer"] = layer_idx
         results.append(result)
+        results.sort(key=lambda r: r["layer"])
+        if checkpoint_path is not None:
+            with open(checkpoint_path, "wb") as f:
+                pickle.dump(results, f)
+
+    if output_path is not None:
+        df = _save_probe_csv(results, output_path)
+        print(f"Saved {output_path.name} ({len(df)} rows)")
+        return df
     return results
 
 
@@ -535,10 +709,12 @@ def train_cascaded_mlp_probe(
                 )
             )
 
-            # Oracle routing: use true labels to route to stage 2
+            # Real cascaded routing: use stage 1 prediction to route to stage 2
             y_pred_full = np.empty(len(y_val), dtype=object)
-            y_pred_full[~s2_mask_val] = s1_pred[~s2_mask_val]
-            y_pred_full[s2_mask_val]  = s2_pred_oracle
+            s1_truth_mask    = s1_pred == "truth"
+            s1_nontruth_mask = ~s1_truth_mask
+            y_pred_full[s1_truth_mask]    = "truth"
+            y_pred_full[s1_nontruth_mask] = clf2.predict(X_val[s1_nontruth_mask])
             cm_accum += confusion_matrix(y_val, y_pred_full, labels=classes)
 
     stage1_f1  = {cls: float(np.mean(scores)) for cls, scores in s1_fold_f1s.items()}
@@ -573,50 +749,53 @@ def train_cascaded_mlp_probe(
 def probe_all_layers_cascaded_mlp(
     activations: np.ndarray,
     labels: np.ndarray,
+    output_path: Path = None,
+    checkpoint_path: Path = None,
     **kwargs,
-) -> list[dict]:
+) -> pd.DataFrame:
     """
-    Run train_cascaded_mlp_probe for every layer.
+    Run train_cascaded_mlp_probe for every layer with skip/checkpoint/save support.
 
     Parameters
     ----------
-    activations : (n_samples, n_layers, hidden_dim)
+    activations     : (n_samples, n_layers, hidden_dim)
+    output_path     : if provided, skip if CSV exists; save results on completion
+    checkpoint_path : if provided, resume from pickle checkpoint
 
     Returns
     -------
-    list of dicts, one per layer (length = n_layers)
+    pd.DataFrame — one row per layer
     """
+    if output_path is not None:
+        output_path = Path(output_path)
+        if output_path.exists():
+            df = pd.read_csv(output_path)
+            print(f"[skip] {output_path.name} already exists ({len(df)} rows)")
+            return df
+
     n_layers = activations.shape[1]
-    results  = []
+
+    if checkpoint_path is not None and Path(checkpoint_path).exists():
+        with open(checkpoint_path, "rb") as f:
+            results = pickle.load(f)
+        done = {r["layer"] for r in results}
+        print(f"[checkpoint] Resuming from layer {max(done)+1} ({len(done)}/{n_layers} done)")
+    else:
+        results, done = [], set()
+
     for layer_idx in tqdm(range(n_layers), desc="cascaded MLP probe (layers)"):
-        layer_acts = activations[:, layer_idx, :]
-        result     = train_cascaded_mlp_probe(layer_acts, labels, **kwargs)
+        if layer_idx in done:
+            continue
+        result = train_cascaded_mlp_probe(activations[:, layer_idx, :], labels, **kwargs)
         result["layer"] = layer_idx
         results.append(result)
-    return results
+        results.sort(key=lambda r: r["layer"])
+        if checkpoint_path is not None:
+            with open(checkpoint_path, "wb") as f:
+                pickle.dump(results, f)
 
-
-def probe_all_layers_cascaded(
-    activations: np.ndarray,
-    labels: np.ndarray,
-    **kwargs,
-) -> list[dict]:
-    """
-    Run train_cascaded_probe for every layer.
-
-    Parameters
-    ----------
-    activations : (n_samples, n_layers, hidden_dim)
-
-    Returns
-    -------
-    list of dicts, one per layer (length = n_layers)
-    """
-    n_layers = activations.shape[1]
-    results = []
-    for layer_idx in tqdm(range(n_layers), desc="cascaded probe (layers)"):
-        layer_acts = activations[:, layer_idx, :]
-        result = train_cascaded_probe(layer_acts, labels, **kwargs)
-        result["layer"] = layer_idx
-        results.append(result)
+    if output_path is not None:
+        df = _save_probe_csv(results, output_path)
+        print(f"Saved {output_path.name} ({len(df)} rows)")
+        return df
     return results

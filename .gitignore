@@ -25,8 +25,6 @@ data/dataset/*/responses/*_raw.csv
 # Per-model batch files (temporary, generated during judging)
 data/dataset/*/judge/*/batch/
 
-# Batch state JSON files (local resume state, not needed in git)
-data/dataset/*/judge/*/*_state.json
 
 # settings.py contains API keys — use settings_template.py instead
 utils/settings.py

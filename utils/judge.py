@@ -460,6 +460,7 @@ def run_judge_openai(
         return pd.read_csv(output_path)
 
     client = OpenAI(api_key=_get_api_key("OPENAI_API_KEY"))
+    enc    = tiktoken.get_encoding("cl100k_base")
 
     # Step 2: Build JSONL parts (or load from state)
     if state_path.exists():
@@ -467,9 +468,55 @@ def run_judge_openai(
         parts = state["parts"]
         completed = sum(1 for p in parts if p["status"] == "completed")
         print(f"Resuming: {len(parts)} parts, {completed} completed")
+
+        # Recovery: re-download result files lost after a fresh git clone
+        for p in parts:
+            if p["status"] == "completed" and p["result_path"] and not Path(p["result_path"]).exists():
+                print(f"[recover] Part {p['part']}: result file missing, re-downloading from OpenAI...")
+                remote = client.batches.retrieve(p["batch_id"])
+                if remote.status != "completed":
+                    raise RuntimeError(
+                        f"Cannot recover part {p['part']}: remote batch status is {remote.status}"
+                    )
+                Path(p["result_path"]).parent.mkdir(parents=True, exist_ok=True)
+                content = client.files.content(remote.output_file_id)
+                Path(p["result_path"]).write_bytes(content.content)
+                print(f"  → {Path(p['result_path']).name}")
+
+        # Recovery: rebuild request JSONL files for pending parts whose files are missing
+        pending_missing = [
+            p for p in parts
+            if p["status"] == "pending" and not Path(p["jsonl_path"]).exists()
+        ]
+        if pending_missing:
+            missing_idxs = {p["part"] for p in pending_missing}
+            print(f"[recover] Rebuilding JSONL for pending parts: {sorted(missing_idxs)}")
+            all_requests = build_batch_requests_openai(resp_df.reset_index(drop=True), model, n_votes)
+            current_part, current_tokens, part_idx = [], 0, 0
+            for req in all_requests:
+                req_tokens = len(enc.encode(json.dumps(req)))
+                if current_part and current_tokens + req_tokens > max_tokens_per_batch:
+                    if part_idx in missing_idxs:
+                        jsonl_path = Path(parts[part_idx]["jsonl_path"])
+                        jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(jsonl_path, "w") as f:
+                            for r in current_part:
+                                f.write(json.dumps(r) + "\n")
+                        print(f"  → part {part_idx}: {jsonl_path.name}")
+                    part_idx += 1
+                    current_part, current_tokens = [], 0
+                current_part.append(req)
+                current_tokens += req_tokens
+            if current_part and part_idx in missing_idxs:
+                jsonl_path = Path(parts[part_idx]["jsonl_path"])
+                jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(jsonl_path, "w") as f:
+                    for r in current_part:
+                        f.write(json.dumps(r) + "\n")
+                print(f"  → part {part_idx}: {jsonl_path.name}")
+
     else:
         resp_df = resp_df.reset_index(drop=True)
-        enc = tiktoken.get_encoding("cl100k_base")
         all_requests = build_batch_requests_openai(resp_df, model, n_votes)
 
         # Split by token count

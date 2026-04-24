@@ -3,7 +3,7 @@ from pathlib import Path
 # ── Model ─────────────────────────────────────────────────────────────────────
 
 # HuggingFace model ID used for loading weights
-MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
+MODEL_ID = "Qwen/Qwen3-4B-Thinking-2507"
 
 # Slug derived from model ID — used as subfolder name under data/dataset/ and outputs/
 MODEL_SLUG = MODEL_ID.split("/")[-1].lower()  # "qwen2.5-7b-instruct"

@@ -1,0 +1,9 @@
+model,classification,prompt,thinking,lr_min,lr_mean,lr_max,mlp_min,mlp_mean,mlp_max,mlp-lr,n,p_wilcoxon
+gemma4,3way,concise,off,0.7825,0.9365,0.9794,0.79,0.9352,0.9679,-0.0013,42,0.6648
+gemma4,cascaded,concise,off,0.7757,0.9356,0.9819,0.7913,0.9356,0.9683,-0.0,42,0.7759
+qwen2.5,3way,concise,off,0.7689,0.9413,0.982,0.8271,0.9446,0.9707,0.0033,28,0.5824
+qwen2.5,3way,debate,off,0.8606,0.9214,0.9611,0.8524,0.9,0.9329,-0.0215,28,0.0
+qwen2.5,cascaded,concise,off,0.7615,0.9398,0.9829,0.8213,0.9447,0.9715,0.0049,28,0.5824
+qwen2.5,cascaded,debate,off,0.8628,0.9244,0.9645,0.8577,0.9048,0.9396,-0.0196,28,0.0
+qwen3,3way,concise,on,0.0955,0.3807,0.5339,0.1354,0.296,0.4057,-0.0846,36,0.0
+qwen3,cascaded,concise,on,0.1207,0.4171,0.5501,0.1523,0.3106,0.4325,-0.1065,36,0.0

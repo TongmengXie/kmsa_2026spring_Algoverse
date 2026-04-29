@@ -162,12 +162,26 @@ def build_probe_dataset(
     tqa_factual  = filter_factual(tqa_full,  "factual")
     mmlu_factual = filter_factual(mmlu_full, "factual")
 
-    honest_rows = scenario_resp_df[["question", "honest_response", "honest_scenario"]].copy()
-    honest_rows.columns = ["question", "response", "system_prompt"]
+    honest_cols = ["question", "honest_thinking", "honest_response", "honest_scenario"] \
+        if "honest_thinking" in scenario_resp_df.columns else \
+        ["question", "honest_response", "honest_scenario"]
+    honest_rows = scenario_resp_df[honest_cols].copy()
+    if "honest_thinking" in honest_cols:
+        honest_rows.columns = ["question", "thinking", "response", "system_prompt"]
+    else:
+        honest_rows.columns = ["question", "response", "system_prompt"]
+        honest_rows["thinking"] = ""
     honest_rows["label"] = "truth"
 
-    deceptive_rows = scenario_resp_df[["question", "deceptive_response", "deceptive_scenario"]].copy()
-    deceptive_rows.columns = ["question", "response", "system_prompt"]
+    deceptive_cols = ["question", "deceptive_thinking", "deceptive_response", "deceptive_scenario"] \
+        if "deceptive_thinking" in scenario_resp_df.columns else \
+        ["question", "deceptive_response", "deceptive_scenario"]
+    deceptive_rows = scenario_resp_df[deceptive_cols].copy()
+    if "deceptive_thinking" in deceptive_cols:
+        deceptive_rows.columns = ["question", "thinking", "response", "system_prompt"]
+    else:
+        deceptive_rows.columns = ["question", "response", "system_prompt"]
+        deceptive_rows["thinking"] = ""
     deceptive_rows["label"] = "deception"
 
     social = pd.concat([honest_rows, deceptive_rows], ignore_index=True)
@@ -205,7 +219,9 @@ def filter_factual(df, domain: str) -> pd.DataFrame:
 
     out = pd.concat([truth, mistake, deception], ignore_index=True)
     out["domain"] = domain
-    return out[["question", "response", "label", "system_prompt", "domain", "correct_answer"]]
+    if "thinking" not in out.columns:
+        out["thinking"] = ""
+    return out[["question", "thinking", "response", "label", "system_prompt", "domain", "correct_answer"]]
 
 
 def save_results_csv(results: list[dict], path: str | Path) -> pd.DataFrame:

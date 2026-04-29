@@ -11,10 +11,19 @@ def extract_activations(
     model,
     tokenizer,
     device: str,
+    thinking: str = "",
 ) -> np.ndarray:
     """
-    Run a single forward pass on (prompt + response) and extract the hidden state
-    at the last token position for every transformer layer.
+    Run a single forward pass on (prompt + thinking + response) and extract the
+    hidden state at the last token position for every transformer layer.
+
+    Parameters
+    ----------
+    thinking : str
+        Raw thinking block including Gemma 4 tags
+        (<|channel>thought\\n....<|channel|>).  Pass the value stored in the
+        `thinking` column of probe_dataset.  Leave empty for models without
+        thinking mode — the forward pass then reduces to (prompt + response).
 
     Returns
     -------
@@ -29,7 +38,10 @@ def extract_activations(
     prompt_text = tokenizer.apply_chat_template(
         messages, add_generation_prompt=True, tokenize=False
     )
-    full_text = prompt_text + response
+    # Include thinking block so the forward pass mirrors the actual generation
+    # sequence: [prompt] → [thinking] → [final answer].
+    # The last token is still the last token of the final answer.
+    full_text = prompt_text + thinking + response
     input_ids = tokenizer(full_text, return_tensors="pt").input_ids.to(device)
 
     with torch.no_grad():
@@ -134,6 +146,7 @@ def run_extract_activations(
             model=model,
             tokenizer=tokenizer,
             device=device,
+            thinking=getattr(row, "thinking", "") or "",
         ))
         all_labels.append(LABEL_MAP[row.label])
 

@@ -3,6 +3,27 @@ import torch
 from pathlib import Path
 from tqdm.auto import tqdm
 
+
+def parse_thinking_response(raw_text: str) -> tuple[str, str]:
+    """Split Gemma 4 thinking output into (thinking_block, final_answer).
+
+    Gemma 4 format: <|channel>thought\\n{reasoning}<|channel|>{final answer}
+
+    thinking_block includes both surrounding tags so it can be concatenated
+    directly into the activation extraction forward pass without reconstruction.
+    Returns ("", raw_text) if no thinking tags are found.
+    """
+    close_tag = "<|channel|>"
+    if close_tag in raw_text:
+        idx = raw_text.index(close_tag)
+        thinking_block = raw_text[: idx + len(close_tag)]
+        final_answer = raw_text[idx + len(close_tag) :].strip()
+    else:
+        thinking_block = ""
+        final_answer = raw_text.strip()
+    return thinking_block, final_answer
+
+
 def generate_response(
     question: str,
     model,
@@ -11,8 +32,18 @@ def generate_response(
     system_prompt: str = "",
     max_new_tokens: int = 100,
     do_sample: bool = False,
-) -> str:
-    """Generate a response to `question` using the given system prompt."""
+) -> tuple[str, str]:
+    """Generate a response to `question` using the given system prompt.
+
+    Returns
+    -------
+    thinking_block : str
+        Raw thinking block including Gemma 4 tags
+        (<|channel>thought\\n....<|channel|>).  Empty string if the model
+        produced no thinking output (e.g. thinking mode not triggered).
+    final_answer : str
+        The model's final answer with thinking block stripped.
+    """
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user",   "content": question},
@@ -30,7 +61,9 @@ def generate_response(
             pad_token_id=tokenizer.eos_token_id,
         )
     new_tokens = output_ids[0][input_ids.shape[-1]:]
-    return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+    # Do NOT skip special tokens — needed to detect <|channel|> boundary
+    raw = tokenizer.decode(new_tokens, skip_special_tokens=False).strip()
+    return parse_thinking_response(raw)
 
 
 def run_factual_generation(
@@ -92,12 +125,19 @@ def run_factual_generation(
         print(f"Config {config_name}: {len(remaining)} rows to generate.")
         records = []
         for i, row in enumerate(tqdm(remaining.itertuples(), total=len(remaining), desc=f"Config {config_name}")):
+            thinking, response = generate_response(
+                row.question, model, tokenizer, device,
+                system_prompt=system_prompt,
+                max_new_tokens=max_new_tokens,
+                do_sample=do_sample,
+            )
             records.append({
                 "question":      row.question,
                 "correct_answer": row.correct_answer,
                 "config":        config_name,
                 "system_prompt": system_prompt,
-                "response":      generate_response(row.question, model, tokenizer, device, system_prompt=system_prompt, max_new_tokens=max_new_tokens, do_sample=do_sample),
+                "thinking":      thinking,
+                "response":      response,
             })
             if (i + 1) % checkpoint_every == 0:
                 pd.DataFrame(records).to_csv(
@@ -168,12 +208,19 @@ def run_scenario_generation(
         print(f"{len(remaining)} rows to generate.")
         records = []
         for i, row in enumerate(tqdm(remaining.itertuples(), total=len(remaining), desc="Scenario generation")):
+            thinking, response = generate_response(
+                row.question, model, tokenizer, device,
+                system_prompt=row.prompt,
+                max_new_tokens=max_new_tokens,
+                do_sample=do_sample,
+            )
             records.append({
                 "pair_id":       row.pair_id,
                 "label":         row.label,
                 "question":      row.question,
                 "system_prompt": row.prompt,
-                "response":      generate_response(row.question, model, tokenizer, device, system_prompt=row.prompt, max_new_tokens=max_new_tokens, do_sample=do_sample),
+                "thinking":      thinking,
+                "response":      response,
             })
             if (i + 1) % checkpoint_every == 0:
                 pd.DataFrame(records).to_csv(
@@ -192,13 +239,15 @@ def run_scenario_generation(
 
     honest = raw[raw["label"] == "honest"].rename(columns={
         "system_prompt": "honest_scenario",
+        "thinking":      "honest_thinking",
         "response":      "honest_response",
-    })[["pair_id", "question", "honest_scenario", "honest_response"]]
+    })[["pair_id", "question", "honest_scenario", "honest_thinking", "honest_response"]]
 
     deceptive = raw[raw["label"] == "deceptive"].rename(columns={
         "system_prompt": "deceptive_scenario",
+        "thinking":      "deceptive_thinking",
         "response":      "deceptive_response",
-    })[["pair_id", "deceptive_scenario", "deceptive_response"]]
+    })[["pair_id", "deceptive_scenario", "deceptive_thinking", "deceptive_response"]]
 
     scenario_resp_df = (
         honest.merge(deceptive, on="pair_id")

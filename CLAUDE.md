@@ -487,3 +487,46 @@ Branch `refactor/simplified-notebook`. Notebook: `kaiyu_generation_and_probing_r
 - Use `do_sample=False` (greedy decoding) for all response generation
 - Use `batch_size=1` for activation extraction (no padding effect on last token)
 - Use `tmux` for long jobs on RunPod, checkpoint every ~50 samples
+
+---
+
+## Session 2026-05-04 / 2026-05-05 - Workshop Submission Prep
+
+### Accomplished
+- Ran simplified-prompt steering experiment on Lambda A10 (6,000 generations on Qwen2.5-7B-Instruct)
+- v_deception flip rates: 96-100% at alpha=5 (vs 84-94% debate-prompt), 76-100% at alpha=3 (vs 38-78% debate-prompt)
+- Layer 18 hits 100% flip rate at alpha=3 with simplified prompt
+- v_mistake stays weak under both prompts: peak 22% (simplified) vs 30% (debate)
+- Validates deception direction is robust to prompt-format variation
+- Verbosity inflation in original debate-prompt run was partly a prompt-format artifact, not the deception direction itself
+
+### Paper Deliverables
+- paper_short.tex (4-page main body) compiled in Overleaf workshop/ folder
+- paper_long.tex (8-page main body) compiled in Overleaf workshop/ folder
+- Both versions integrate Kaiyu's updated Pair B numbers (within-Gemma 0.848 vs 0.829, Qwen3-thinking 0.771)
+- Both have new section on robustness to deception-prompt format
+- Both have full appendix with 5 supplementary figures
+- 9 figure PNGs uploaded to Overleaf
+
+### Pending
+- Kaiyu to send native PNG exports of plots (current ones are screen-captures, formatting issues)
+- Tommy / PIs to choose short vs long for submission
+- Reciprocal reviewer assignment (one team member reviews 3 papers)
+- May 8 OpenReview submission
+
+### Files Added This Session
+- steering_simplified/scripts/compute_caa_vectors_simplified.py
+- steering_simplified/scripts/steering_experiment_simplified.py
+- steering_simplified/scripts/judge_simplified.py
+- steering_simplified/scripts/compute_caa_vectors.py (original, also archived)
+- steering_simplified/scripts/steering_experiment.py (original, also archived)
+- steering_simplified/scripts/judge_steering_correctness.py (original, also archived)
+- steering_simplified/scripts/train_binary_probes.py (probe training, also archived)
+- steering_simplified/results/steering_full_results.csv (4.2 MB, 6000 generations)
+- steering_simplified/results/steering_judged.csv (6.9 MB, 6000 judgments)
+- steering_simplified/results/steering_summary.csv
+
+### Lambda Instance
+- Terminated after data transfer to free GPU and stop billing
+- All scripts and results archived to GitHub for reproducibility
+

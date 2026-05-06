@@ -4,9 +4,10 @@ from utils.prompt_registry import NEUTRAL_PROMPTS, DECEPTION_PROMPTS
 # ── Model ─────────────────────────────────────────────────────────────────────
 
 # HuggingFace model ID used for loading weights
-MODEL_ID = "Qwen/Qwen3-4B-Thinking-2507"
+# MODEL_ID = "Qwen/Qwen3-4B-Thinking-2507"
 # MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"  # smaller model for testing
 # MODEL_ID = "google/gemma-4-E4B-it"  # switch back to larger model for final runs
+MODEL_ID = "Qwen/Qwen3-4B"
 
 # Slug derived from model ID — used as subfolder name under data/dataset/ and outputs/
 MODEL_SLUG = MODEL_ID.split("/")[-1].lower()  # "qwen2.5-7b-instruct"

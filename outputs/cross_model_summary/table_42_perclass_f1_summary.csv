@@ -1,0 +1,4 @@
+class,3way_lr_mean,3way_lr_peak,3way_lr_peak_rel_depth,3way_mlp_mean,3way_mlp_peak,3way_mlp_peak_rel_depth,cascaded_lr_mean,cascaded_lr_peak,cascaded_lr_peak_rel_depth,cascaded_mlp_mean,cascaded_mlp_peak,cascaded_mlp_peak_rel_depth
+deception,0.9492,0.9757,0.554,0.94,0.9606,0.734,0.951,0.9777,0.733,0.9412,0.9619,0.627
+honest_mistake,0.7599,0.803,0.695,0.7476,0.7916,0.688,0.7578,0.8031,0.705,0.7535,0.7963,0.695
+truth,0.5985,0.6743,0.659,0.5993,0.6577,0.625,0.5833,0.6752,0.642,0.5983,0.6579,0.683

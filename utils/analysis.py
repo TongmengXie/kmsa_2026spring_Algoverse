@@ -1,3 +1,4 @@
+import re
 import time
 import numpy as np
 import pandas as pd
@@ -162,26 +163,12 @@ def build_probe_dataset(
     tqa_factual  = filter_factual(tqa_full,  "factual")
     mmlu_factual = filter_factual(mmlu_full, "factual")
 
-    honest_cols = ["question", "honest_thinking", "honest_response", "honest_scenario"] \
-        if "honest_thinking" in scenario_resp_df.columns else \
-        ["question", "honest_response", "honest_scenario"]
-    honest_rows = scenario_resp_df[honest_cols].copy()
-    if "honest_thinking" in honest_cols:
-        honest_rows.columns = ["question", "thinking", "response", "system_prompt"]
-    else:
-        honest_rows.columns = ["question", "response", "system_prompt"]
-        honest_rows["thinking"] = ""
+    honest_rows = scenario_resp_df[["question", "honest_response", "honest_scenario"]].copy()
+    honest_rows.columns = ["question", "response", "system_prompt"]
     honest_rows["label"] = "truth"
 
-    deceptive_cols = ["question", "deceptive_thinking", "deceptive_response", "deceptive_scenario"] \
-        if "deceptive_thinking" in scenario_resp_df.columns else \
-        ["question", "deceptive_response", "deceptive_scenario"]
-    deceptive_rows = scenario_resp_df[deceptive_cols].copy()
-    if "deceptive_thinking" in deceptive_cols:
-        deceptive_rows.columns = ["question", "thinking", "response", "system_prompt"]
-    else:
-        deceptive_rows.columns = ["question", "response", "system_prompt"]
-        deceptive_rows["thinking"] = ""
+    deceptive_rows = scenario_resp_df[["question", "deceptive_response", "deceptive_scenario"]].copy()
+    deceptive_rows.columns = ["question", "response", "system_prompt"]
     deceptive_rows["label"] = "deception"
 
     social = pd.concat([honest_rows, deceptive_rows], ignore_index=True)
@@ -194,6 +181,114 @@ def build_probe_dataset(
     print(f"\nLabel distribution:\n{probe_dataset['label'].value_counts().to_string()}")
     print(f"\nDomain distribution:\n{probe_dataset['domain'].value_counts().to_string()}")
     return probe_dataset
+
+
+def prepare_gemma4_thinking_dataset(
+    dataset_path: str | Path,
+    output_path: "str | Path | None" = None,
+) -> pd.DataFrame:
+    """
+    Prepend the Gemma 4 thinking-mode trigger token to every prompt in the
+    scenario dataset.
+
+    Gemma 4 requires <|think|> at the start of the system prompt to enable
+    extended thinking.  The base deception_dataset.csv does not include this
+    token, so this function produces a ready-to-use variant.
+
+    Parameters
+    ----------
+    dataset_path : path to deception_dataset.csv (or any CSV with a 'prompt' column)
+    output_path  : where to save the result; defaults to
+                   <dataset_path parent>/deception_dataset_gemma4_thinking.csv
+
+    Returns
+    -------
+    pd.DataFrame — copy of the dataset with <|think|> prepended to every prompt
+    """
+    dataset_path = Path(dataset_path)
+    if output_path is None:
+        output_path = dataset_path.parent / "deception_dataset_gemma4_thinking.csv"
+    output_path = Path(output_path)
+
+    if output_path.exists():
+        df = pd.read_csv(output_path)
+        print(f"[skip] Loaded gemma4 thinking dataset ({len(df)} rows): {output_path.name}")
+        return df
+
+    df = pd.read_csv(dataset_path)
+    out = df.copy()
+    out["prompt"] = "<|think|>" + out["prompt"]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(output_path, index=False)
+    print(f"Saved gemma4 thinking dataset ({len(out)} rows) → {output_path.name}")
+    return out
+
+
+def split_thinking_responses(
+    df: pd.DataFrame,
+    response_col: str = "response",
+    save_path: "Path | str | None" = None,
+) -> pd.DataFrame:
+    """
+    Split thinking-mode responses into thinking and answer parts.
+
+    Detects and extracts thinking blocks from two formats:
+      - Qwen3 / DeepSeek-R1 : <think>...</think>
+      - Gemma 4             : <|channel>thought\\n...<channel|>
+
+    Adds two columns to the returned DataFrame:
+      response_thinking : content inside the thinking block (empty string if none)
+      response_answer   : content after the thinking block (original response if no block)
+
+    Rows without a thinking block are passed through with response_thinking='' and
+    response_answer equal to the original response, so downstream code can always
+    use response_answer as a unified column regardless of model.
+
+    Parameters
+    ----------
+    df           : DataFrame containing raw model responses (thinking tags preserved)
+    response_col : name of the column with raw responses (default: 'response')
+    save_path    : if given, saves the result CSV to this path
+
+    Returns
+    -------
+    pd.DataFrame — copy of df with response_thinking and response_answer added
+    """
+    _GEMMA_RE = re.compile(r"<\|channel>thought\n(.*?)<channel\|>(.*)", re.DOTALL)
+
+    def _parse(text: str) -> tuple:
+        if not isinstance(text, str):
+            return ("", str(text))
+        text = text.strip()
+        # Qwen3/DeepSeek-R1: split on </think> (opening <think> may be absent)
+        if "</think>" in text:
+            thinking, answer = text.split("</think>", 1)
+            if thinking.startswith("<think>"):
+                thinking = thinking[len("<think>"):]
+            return (thinking.strip(), answer.strip())
+        # Gemma 4 format
+        m = _GEMMA_RE.match(text)
+        if m:
+            return (m.group(1).strip(), m.group(2).strip())
+        return ("", text)
+
+    parsed = df[response_col].map(_parse)
+    out = df.copy()
+    out["response_thinking"] = parsed.map(lambda x: x[0])
+    out["response_answer"]   = parsed.map(lambda x: x[1])
+
+    has_thinking = (out["response_thinking"] != "").sum()
+    print(f"Rows with thinking blocks : {has_thinking} / {len(out)}")
+    print(f"Rows without thinking     : {len(out) - has_thinking} / {len(out)}")
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        out.to_csv(save_path, index=False)
+        print(f"Saved → {save_path.name}")
+
+    return out
 
 
 def filter_factual(df, domain: str) -> pd.DataFrame:
@@ -219,9 +314,7 @@ def filter_factual(df, domain: str) -> pd.DataFrame:
 
     out = pd.concat([truth, mistake, deception], ignore_index=True)
     out["domain"] = domain
-    if "thinking" not in out.columns:
-        out["thinking"] = ""
-    return out[["question", "thinking", "response", "label", "system_prompt", "domain", "correct_answer"]]
+    return out[["question", "response", "label", "system_prompt", "domain", "correct_answer"]]
 
 
 def save_results_csv(results: list[dict], path: str | Path) -> pd.DataFrame:

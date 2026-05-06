@@ -7,22 +7,35 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Large files — too big for GitHub (on HuggingFace Hub instead)
+# Two-level:   outputs/{model_slug}/
+# Three-level: outputs/{model_slug}/{prompt_variant}/
 outputs/*/activations.npy
 outputs/*/activations_pca*.npy
 outputs/*/pca*_components.npy
 outputs/*/activations_checkpoint.npz
 outputs/*/labels.npy
+outputs/*/*/activations.npy
+outputs/*/*/activations_pca*.npy
+outputs/*/*/pca*_components.npy
+outputs/*/*/activations_checkpoint.npz
+outputs/*/*/labels.npy
 
 # HuggingFace download cache
-outputs/.cache/
+outputs/*/.cache/
+outputs/*/*/.cache/
 
 # Probe checkpoints (intermediate, not needed in git)
+# Two-level:   outputs/{model_slug}/{probe_type}/
+# Three-level: outputs/{model_slug}/{prompt_variant}/{probe_type}/
 outputs/*/*/checkpoint_*.pkl
+outputs/*/*/*/checkpoint_*.pkl
 
 # Per-model data (not in git — too large or model-specific)
-data/dataset/*/responses/*_raw.csv
+# Structure: data/dataset/{model_slug}/{prompt_variant}/responses/
+# data/dataset/*/*/responses/*_raw.csv
 
 # Per-model batch files (temporary, generated during judging)
+# Structure: data/dataset/{model_slug}/judge/{judge_slug}/batch/
 data/dataset/*/judge/*/batch/
 
 

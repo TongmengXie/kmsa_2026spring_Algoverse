@@ -1,0 +1,5 @@
+probe,mean_macro_f1,mlp_lr_delta,mlp_lr_p,mlp_lr_n,cascaded_direct_delta,cascaded_direct_p,cascaded_direct_n
+3way_lr,0.7692,,,,,,
+3way_mlp,0.7623,-0.0069,0.0,176.0,,,
+cascaded_lr,0.764,,,,-0.0052,0.0,176.0
+cascaded_mlp,0.7643,0.0003,0.8773,176.0,0.002,0.0,176.0

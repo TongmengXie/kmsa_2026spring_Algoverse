@@ -17,7 +17,7 @@ def generate_response(
         {"role": "user",   "content": question},
     ]
     text = tokenizer.apply_chat_template(
-        messages, add_generation_prompt=True, tokenize=False
+        messages, add_generation_prompt=True, tokenize=False, enable_thinking=False
     )
     input_ids = tokenizer(text, return_tensors="pt").input_ids.to(device)
     max_new_tokens = 10052
@@ -275,6 +275,7 @@ def run_factual_generation_vllm(
                     ],
                     add_generation_prompt=True,
                     tokenize=False,
+                    enable_thinking=False,
                 )
                 for row in chunk
             ]
@@ -357,6 +358,7 @@ def run_scenario_generation_vllm(
                     ],
                     add_generation_prompt=True,
                     tokenize=False,
+                    enable_thinking=False,
                 )
                 for row in chunk
             ]

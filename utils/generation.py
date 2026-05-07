@@ -246,7 +246,7 @@ def run_factual_generation_vllm(
 
     sampling_params = SamplingParams(
         temperature=0.0 if not do_sample else 1.0,
-        max_tokens=tokenizer.model_max_length,
+        max_tokens=10052,
         skip_special_tokens=False,
     )
 
@@ -341,7 +341,7 @@ def run_scenario_generation_vllm(
         rows = list(remaining.itertuples())
         sampling_params = SamplingParams(
             temperature=0.0 if not do_sample else 1.0,
-            max_tokens=tokenizer.model_max_length,
+            max_tokens=10052,
             skip_special_tokens=False,
         )
 

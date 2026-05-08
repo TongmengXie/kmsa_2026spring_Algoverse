@@ -530,3 +530,28 @@ Branch `refactor/simplified-notebook`. Notebook: `kaiyu_generation_and_probing_r
 - Terminated after data transfer to free GPU and stop billing
 - All scripts and results archived to GitHub for reproducibility
 
+---
+
+## Session 2026-05-08 — Qwen3-4B Thinking Mode Setup (RunPod RTX 4090)
+
+### Goal
+Switch Qwen3-4B generation from non-thinking mode to thinking mode for `experiment.ipynb`.
+
+### Code Changes
+- `utils/generation.py`: changed `enable_thinking=False` → `enable_thinking=True` in all three `apply_chat_template` calls (`generate_response`, `run_factual_generation_vllm`, `run_scenario_generation_vllm`)
+- `utils/generation.py`: replaced `temperature=0.0 if not do_sample else 1.0` with Qwen3 recommended thinking-mode params `temperature=0.6, top_p=0.95, top_k=20, min_p=0` in both vLLM `SamplingParams` blocks (note: `do_sample` parameter is now ignored in vLLM path)
+- `utils/analysis.py`: `split_thinking_responses` was already implemented; activation extraction already uses `response_answer` (post-`</think>` text) — no changes needed
+
+### RunPod Environment Fix
+The RunPod instance came pre-installed with vllm 0.20.1 + torch 2.11.0+**cu130**, but the system driver (570.195.03) only supports CUDA 12.8. Required the following manual fixes to match the working instance (PyTorch 2.6.0+cu124, vLLM 0.8.5):
+
+1. **torch**: reinstalled as `torch==2.6.0+cu124` from `https://download.pytorch.org/whl/cu124`
+2. **vllm**: reinstalled as `vllm==0.8.5` (`--force-reinstall` to pull clean dependency set)
+3. **triton**: downgraded from 3.6.0 → 3.2.0 (apache-tvm-ffi pulled 3.6.0 which is incompatible with torch 2.6.0)
+4. **flashinfer / apache-tvm-ffi / torch_c_dlpack_ext**: uninstalled — these were vllm 0.20.1 leftovers compiled with new C++11 ABI (`_GLIBCXX_USE_CXX11_ABI=1`), incompatible with torch 2.6.0+cu124 which uses old ABI; vllm 0.8.5 does not require them and falls back to PyTorch-native sampling
+5. **vllm tokenizer patch**: patched `/usr/local/lib/python3.11/dist-packages/vllm/transformers_utils/tokenizer.py` line 83–84 — `tokenizer.all_special_tokens_extended` was removed in transformers 5.x; replaced with `getattr(tokenizer, "all_special_tokens_extended", tokenizer.all_special_tokens)`
+
+6. **`VLLM_ENABLE_V1_MULTIPROCESSING=0`**: must be set before any vllm import in the notebook (`import os; os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"`). vLLM v1 defaults to spawning a separate engine core process via multiprocessing; inside a Jupyter kernel where CUDA is already initialized, the forked subprocess inherits a broken CUDA context and dies silently (zombie process, GPU drops to 0MiB, generation hangs at 0%). Setting this to `0` runs the engine core in-process (InprocClient), avoiding the fork entirely.
+
+**Note for paper**: the `requirements.txt` (`transformers>=4.45.0,<5.0`) is correct for a clean install. The above fixes were specific to this RunPod instance's pre-installed environment and would not be needed on a fresh setup.
+

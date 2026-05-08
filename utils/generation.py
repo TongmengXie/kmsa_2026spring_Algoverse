@@ -17,7 +17,7 @@ def generate_response(
         {"role": "user",   "content": question},
     ]
     text = tokenizer.apply_chat_template(
-        messages, add_generation_prompt=True, tokenize=False, enable_thinking=False
+        messages, add_generation_prompt=True, tokenize=False, enable_thinking=True
     )
     input_ids = tokenizer(text, return_tensors="pt").input_ids.to(device)
     max_new_tokens = 10052
@@ -245,7 +245,10 @@ def run_factual_generation_vllm(
         print(f"Starting fresh: {total_expected} rows across 3 configs")
 
     sampling_params = SamplingParams(
-        temperature=0.0 if not do_sample else 1.0,
+        temperature=0.6,
+        top_p=0.95,
+        top_k=20,
+        min_p=0,
         max_tokens=10052,
         skip_special_tokens=False,
     )
@@ -275,7 +278,7 @@ def run_factual_generation_vllm(
                     ],
                     add_generation_prompt=True,
                     tokenize=False,
-                    enable_thinking=False,
+                    enable_thinking=True,
                 )
                 for row in chunk
             ]
@@ -340,7 +343,10 @@ def run_scenario_generation_vllm(
         print(f"{len(remaining)} rows to generate.")
         rows = list(remaining.itertuples())
         sampling_params = SamplingParams(
-            temperature=0.0 if not do_sample else 1.0,
+            temperature=0.6,
+            top_p=0.95,
+            top_k=20,
+            min_p=0,
             max_tokens=10052,
             skip_special_tokens=False,
         )
@@ -358,7 +364,7 @@ def run_scenario_generation_vllm(
                     ],
                     add_generation_prompt=True,
                     tokenize=False,
-                    enable_thinking=False,
+                    enable_thinking=True,
                 )
                 for row in chunk
             ]

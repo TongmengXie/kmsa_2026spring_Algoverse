@@ -7,6 +7,9 @@ import seaborn as sns
 from pathlib import Path
 
 
+EXPORT_DPI = 300
+
+
 def _ensure_list(dfs_labels, default_label=""):
     """Normalize input to list of (df, label) tuples."""
     if isinstance(dfs_labels, pd.DataFrame):
@@ -42,7 +45,7 @@ def plot_macro_f1(
         ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    fig.savefig(output_path, dpi=EXPORT_DPI)
     plt.close(fig)
     print(f"Saved {output_path.name}")
 
@@ -75,7 +78,7 @@ def plot_perclass_f1(
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    fig.savefig(output_path, dpi=EXPORT_DPI)
     plt.close(fig)
     print(f"Saved {output_path.name}")
 
@@ -109,7 +112,7 @@ def plot_auroc(
     ax.set_ylim(0.5, 1.0)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    fig.savefig(output_path, dpi=EXPORT_DPI)
     plt.close(fig)
     print(f"Saved {output_path.name}")
 
@@ -165,6 +168,6 @@ def plot_top_confusion_matrices(
         ax.set_ylabel("True")
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    fig.savefig(output_path, dpi=EXPORT_DPI)
     plt.close(fig)
     print(f"Saved {output_path.name}")

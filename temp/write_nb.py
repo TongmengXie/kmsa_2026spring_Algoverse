@@ -220,6 +220,6 @@ nb = {
     "nbformat_minor": 5
 }
 
-with open(r"d:\code\kmsa_2026spring_Algoverse\summary.ipynb", "w", encoding="utf-8") as f:
+with open(r"d:\code\anonymous_dir\summary.ipynb", "w", encoding="utf-8") as f:
     json.dump(nb, f, indent=1, ensure_ascii=False)
 print("done")

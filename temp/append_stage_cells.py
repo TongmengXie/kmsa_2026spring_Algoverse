@@ -1,6 +1,6 @@
 ﻿import json
 
-with open(r"d:\code\kmsa_2026spring_Algoverse\summary.ipynb", encoding="utf-8") as f:
+with open(r"d:\code\anonymous_dir\summary.ipynb", encoding="utf-8") as f:
     nb = json.load(f)
 
 new_cells = [
@@ -98,6 +98,6 @@ new_cells = [
 
 nb["cells"].extend(new_cells)
 
-with open(r"d:\code\kmsa_2026spring_Algoverse\summary.ipynb", "w", encoding="utf-8") as f:
+with open(r"d:\code\anonymous_dir\summary.ipynb", "w", encoding="utf-8") as f:
     json.dump(nb, f, indent=1, ensure_ascii=False)
 print("done")

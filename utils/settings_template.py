@@ -168,4 +168,4 @@ VOTE_THRESHOLD_NONCORRECT = 0
 # ── HuggingFace Hub ───────────────────────────────────────────────────────────
 
 # Private dataset repo where large activation files are stored (not in git)
-HF_ACTIVATIONS_REPO = f"mikrokozmoz/algoverse2026spring_llm_honesty_probing"
+HF_ACTIVATIONS_REPO = f"anonymous-icml-submission/anonymous-icml-submission-dataset"

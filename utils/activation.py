@@ -44,7 +44,16 @@ def extract_activations(
     return activations.cpu().float().numpy()
 
 
-LABEL_MAP = {"truth": 0, "honest_mistake": 1, "deception": 2}
+LABEL_MAP = {
+    "truth": 0,
+    "honest_mistake": 1,
+    "deception": 2,
+    # Supplement configs (additional_experiment.ipynb). Append-only so existing
+    # labels.npy files keep decoding to the original three classes.
+    "natural_deception": 3,
+    "capable_failed": 4,
+    "deception_rejection": 5,
+}
 
 
 def run_extract_activations(
@@ -97,11 +106,14 @@ def run_extract_activations(
         except ImportError:
             pass
         print(f"Local files not found. Downloading from {hf_repo} ...")
-        for filename in ["activations.npy", "labels.npy"]:
+        # Download filenames derive from the requested paths (not hard-coded), so a
+        # run using distinct names (e.g. activations_new_config.npy) never pulls the
+        # 3-class activations.npy by mistake — and missing files fall through to extraction.
+        for path in [activations_path, labels_path]:
             hf_hub_download(
-                repo_id=hf_repo, filename=filename,
+                repo_id=hf_repo, filename=path.name,
                 repo_type="dataset", token=hf_token,
-                local_dir=str(activations_path.parent),
+                local_dir=str(path.parent),
             )
         activations_arr = _load_with_progress(activations_path, "Loading activations")
         labels_arr      = _load_with_progress(labels_path,      "Loading labels     ")

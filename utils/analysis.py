@@ -140,14 +140,27 @@ def build_probe_dataset(
     mmlu_full,
     scenario_resp_df,
     output_path: Path,
+    rules=None,
+    include_social: bool = True,
 ) -> pd.DataFrame:
     """
-    Build and save probe_dataset.csv from judge results and scenario responses.
+    Build and save a probe dataset from judge results and (optionally) scenario responses.
 
     Skips if output_path already exists.
 
-    Factual rows: filter_factual applied to tqa_full and mmlu_full (strictest thresholds).
-    Social rows: honest → truth, deceptive → deception; system_prompt from scenario columns.
+    Factual rows: filter_factual applied to tqa_full and mmlu_full with `rules`
+    (defaults to the strictest 3-class thresholds, FACTUAL_RULES_DEFAULT).
+    Social rows (only when include_social): honest → truth, deceptive → deception;
+    system_prompt from scenario columns.
+
+    Parameters
+    ----------
+    tqa_full, mmlu_full : full judge DataFrames (with 'config' and 'votes_correct')
+    scenario_resp_df    : wide-format scenario responses; may be None when
+                          include_social is False (e.g. supplement-config runs)
+    output_path         : where to save the probe dataset CSV
+    rules               : (config, votes_correct, label) triples passed to filter_factual
+    include_social      : whether to append the social honest/deceptive rows
 
     Returns
     -------
@@ -160,22 +173,26 @@ def build_probe_dataset(
         print(f"[skip] Loaded probe_dataset ({len(df)} rows): {output_path.name}")
         return df
 
-    tqa_factual  = filter_factual(tqa_full,  "factual")
-    mmlu_factual = filter_factual(mmlu_full, "factual")
+    tqa_factual  = filter_factual(tqa_full,  "factual", rules=rules)
+    mmlu_factual = filter_factual(mmlu_full, "factual", rules=rules)
+    parts = [tqa_factual, mmlu_factual]
 
-    honest_rows = scenario_resp_df[["question", "honest_response", "honest_scenario"]].copy()
-    honest_rows.columns = ["question", "response", "system_prompt"]
-    honest_rows["label"] = "truth"
+    if include_social:
+        honest_rows = scenario_resp_df[["question", "honest_response", "honest_scenario"]].copy()
+        honest_rows.columns = ["question", "response", "system_prompt"]
+        honest_rows["label"] = "truth"
 
-    deceptive_rows = scenario_resp_df[["question", "deceptive_response", "deceptive_scenario"]].copy()
-    deceptive_rows.columns = ["question", "response", "system_prompt"]
-    deceptive_rows["label"] = "deception"
+        deceptive_rows = scenario_resp_df[["question", "deceptive_response", "deceptive_scenario"]].copy()
+        deceptive_rows.columns = ["question", "response", "system_prompt"]
+        deceptive_rows["label"] = "deception"
 
-    social = pd.concat([honest_rows, deceptive_rows], ignore_index=True)
-    social["domain"] = "social"
-    social["correct_answer"] = ""
+        social = pd.concat([honest_rows, deceptive_rows], ignore_index=True)
+        social["domain"] = "social"
+        social["correct_answer"] = ""
+        parts.append(social)
 
-    probe_dataset = pd.concat([tqa_factual, mmlu_factual, social], ignore_index=True)
+    probe_dataset = pd.concat(parts, ignore_index=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     probe_dataset.to_csv(output_path, index=False)
     print(f"Saved probe_dataset ({len(probe_dataset)} rows) → {output_path.name}")
     print(f"\nLabel distribution:\n{probe_dataset['label'].value_counts().to_string()}")
@@ -291,28 +308,47 @@ def split_thinking_responses(
     return out
 
 
-def filter_factual(df, domain: str) -> pd.DataFrame:
+# Default factual (config, votes_correct, label) rules for the main 3-class experiment.
+# Override via the `rules` argument — e.g. SUPPLEMENT_LABEL_RULES for the supplement configs.
+FACTUAL_RULES_DEFAULT = [
+    ("A", 6, "truth"),
+    ("B", 0, "honest_mistake"),
+    ("C", 0, "deception"),
+]
+
+
+def filter_factual(df, domain: str, rules=None) -> pd.DataFrame:
     """
-    Filter a full judge DataFrame into probe-ready rows using strictest vote thresholds.
+    Filter a full judge DataFrame into probe-ready rows using (config, votes_correct) rules.
 
-    Config A + votes_correct == 6 → truth
-    Config B + votes_correct == 0 → honest_mistake
-    Config C + votes_correct == 0 → deception
+    Each rule is a (config, votes_correct, label) triple: rows whose 'config' AND
+    'votes_correct' match are assigned that label. Rows matching no rule are discarded.
 
-    All other rows are discarded (inconsistent MC + judge signal).
+    The default rules (FACTUAL_RULES_DEFAULT) reproduce the strictest 3-class setting:
+        Config A + votes_correct == 6 → truth
+        Config B + votes_correct == 0 → honest_mistake
+        Config C + votes_correct == 0 → deception
+
+    Parameters
+    ----------
+    df     : full judge DataFrame with 'config' and 'votes_correct' columns
+    domain : value written to the 'domain' column (e.g. 'factual')
+    rules  : list of (config, votes_correct, label); defaults to FACTUAL_RULES_DEFAULT
 
     Returns
     -------
     pd.DataFrame with columns: question, response, label, system_prompt, domain, correct_answer
     """
-    truth     = df[(df["config"] == "A") & (df["votes_correct"] == 6)].copy()
-    truth["label"] = "truth"
-    mistake   = df[(df["config"] == "B") & (df["votes_correct"] == 0)].copy()
-    mistake["label"] = "honest_mistake"
-    deception = df[(df["config"] == "C") & (df["votes_correct"] == 0)].copy()
-    deception["label"] = "deception"
+    if rules is None:
+        rules = FACTUAL_RULES_DEFAULT
 
-    out = pd.concat([truth, mistake, deception], ignore_index=True)
+    parts = []
+    for config, votes_correct, label in rules:
+        sub = df[(df["config"] == config) & (df["votes_correct"] == votes_correct)].copy()
+        sub["label"] = label
+        parts.append(sub)
+
+    out = pd.concat(parts, ignore_index=True)
     out["domain"] = domain
     return out[["question", "response", "label", "system_prompt", "domain", "correct_answer"]]
 

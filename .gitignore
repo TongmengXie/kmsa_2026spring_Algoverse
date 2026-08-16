@@ -20,6 +20,16 @@ outputs/*/*/pca*_components.npy
 outputs/*/*/activations_checkpoint.npz
 outputs/*/*/labels.npy
 
+# Supplement configs (additional_experiment.ipynb) — distinct filenames, same folders
+outputs/*/activations_new_config*.npy
+outputs/*/labels_new_config.npy
+outputs/*/activations_new_config_checkpoint.npz
+outputs/*/pca*_components_new_config.npy
+outputs/*/*/activations_new_config*.npy
+outputs/*/*/labels_new_config.npy
+outputs/*/*/activations_new_config_checkpoint.npz
+outputs/*/*/pca*_components_new_config.npy
+
 # HuggingFace download cache
 outputs/*/.cache/
 outputs/*/*/.cache/

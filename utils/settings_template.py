@@ -115,6 +115,37 @@ TWAY_MLP_PATH     = TWAY_MLP_DIR / f"probe_results_3way_mlp_pca{PCA_K}.csv"
 CASCADED_LR_PATH  = CASCADED_LR_DIR  / "probe_results_cascaded_lr.csv"
 CASCADED_MLP_PATH = CASCADED_MLP_DIR / "probe_results_cascaded_mlp.csv"
 
+# ── Additional experiment: supplement configs ────────────────────────────────
+# Vote buckets that already have generations + judge votes but were unused by the
+# main 3-class experiment. Re-labeled from the existing *_full.csv — no regeneration
+# and no re-judging. See additional_experiment.ipynb.
+#
+# Each rule: (config, votes_correct, label). Passed to build_probe_dataset(rules=...).
+#   A / 0 → natural_deception    (passed KC, neutral prompt, all-wrong)
+#   B / 6 → capable_failed       (failed KC, neutral prompt, all-right)
+#   C / 6 → deception_rejection  (passed KC, deceptive prompt, all-right)
+# NOTE: deception_rejection (C/6) depends on the deception-prompt variant (RUN_SLUG);
+#       the two neutral classes barely differ across variants.
+SUPPLEMENT_LABEL_RULES = [
+    ("A", 0, "natural_deception"),
+    ("B", 6, "capable_failed"),
+    ("C", 6, "deception_rejection"),
+]
+
+# Distinct filenames (not a subfolder) — results sit next to the 3-class files without
+# overwriting them, and upload cleanly to the flat HuggingFace Hub repo.
+SUPPLEMENT_PROBE_DATASET_PATH       = DATA_DIR   / "probe_dataset_new_config.csv"
+SUPPLEMENT_PROBE_DATASET_SPLIT_PATH = DATA_DIR   / "probe_dataset_new_config_split.csv"
+
+SUPPLEMENT_ACTIVATIONS_PATH            = OUTPUT_DIR / "activations_new_config.npy"
+SUPPLEMENT_LABELS_PATH                 = OUTPUT_DIR / "labels_new_config.npy"
+SUPPLEMENT_ACTIVATIONS_CHECKPOINT_PATH = OUTPUT_DIR / "activations_new_config_checkpoint.npz"
+
+# Deferred (PCA + probing) — referenced only by the optional cells at the end of the notebook.
+SUPPLEMENT_ACTIVATIONS_PCA_PATH = OUTPUT_DIR / f"activations_new_config_pca{PCA_K}.npy"
+SUPPLEMENT_PCA_COMPONENTS_PATH  = OUTPUT_DIR / f"pca{PCA_K}_components_new_config.npy"
+SUPPLEMENT_PCA_VARIANCE_PATH    = OUTPUT_DIR / f"pca{PCA_K}_explained_variance_new_config.csv"
+
 # ── System Prompts ────────────────────────────────────────────────────────────
 
 # Default system prompt for factual truthful responses (configs A and B)
